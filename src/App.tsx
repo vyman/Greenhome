@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import type { User } from "@supabase/supabase-js";
+import { supabase } from "./lib/supabase";
 
 type IconName =
   | "alert"
@@ -99,6 +101,19 @@ const alerts = [
 
 function Status({ value }: { value: string }) {
   return <span className={`status status-${value.toLowerCase().replaceAll(" ", "-")}`}><i />{value}</span>;
+}
+
+function displayStatus(value: string) {
+  return value.split("_").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+}
+
+function errorMessage(error: unknown) {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object") {
+    const record = error as { message?: string; details?: string; hint?: string; code?: string };
+    return [record.message, record.details, record.hint, record.code ? `Code: ${record.code}` : ""].filter(Boolean).join(" · ");
+  }
+  return String(error || "Unknown Supabase error");
 }
 
 function MetricCard({ label, value, meta, icon, tone, delta, onClick }: { label: string; value: string; meta: string; icon: IconName; tone: string; delta?: string; onClick: () => void }) {
@@ -319,10 +334,10 @@ const moduleConfigs: Record<string, ModuleConfig> = {
     insight: [{ title: "Latest report", value: "GH-0148", note: "Generated today" }, { title: "Photos included", value: "146", note: "Across June reports" }, { title: "Default format", value: "A4 PDF", note: "Branded site report" }],
   },
   "Users & Settings": {
-    title: "Users & settings", eyebrow: "PHASE 1 ACCESS CONTROL", description: "Manage staff accounts and the four agreed role presets with basic audit history.", primary: "Invite user", icon: "settings",
+    title: "Users & settings", eyebrow: "ACCESS CONTROL", description: "Manage staff accounts, six role presets and basic audit history.", primary: "Invite user", icon: "settings",
     tabs: ["Users", "Role presets", "Alerts", "Business profile", "Audit log"],
     metrics: [
-      { label: "ACTIVE USERS", value: "12", note: "4 role presets", tone: "green" },
+      { label: "ACTIVE USERS", value: "12", note: "6 role presets", tone: "green" },
       { label: "ONLINE TODAY", value: "8", note: "Last 24 hours", tone: "blue" },
       { label: "PENDING INVITES", value: "2", note: "Expire in 4 days", tone: "amber" },
       { label: "SECURITY ALERTS", value: "0", note: "No action required", tone: "green" },
@@ -339,7 +354,7 @@ const moduleConfigs: Record<string, ModuleConfig> = {
   },
 };
 
-function ModulePage({ config, search, notify, onPrimary }: { config: ModuleConfig; search: string; notify: (message: string) => void; onPrimary: () => void }) {
+function ModulePage({ config, search, notify, onPrimary, onRowOpen }: { config: ModuleConfig; search: string; notify: (message: string) => void; onPrimary: () => void; onRowOpen?: (row: string[]) => void }) {
   const [activeTab, setActiveTab] = useState(config.tabs[0]);
   const rows = config.rows.filter((row) => row.join(" ").toLowerCase().includes(search.toLowerCase()));
 
@@ -382,7 +397,7 @@ function ModulePage({ config, search, notify, onPrimary }: { config: ModuleConfi
               <thead><tr>{config.columns.map((column) => <th key={column}>{column}</th>)}<th /></tr></thead>
               <tbody>
                 {rows.map((row, rowIndex) => (
-                  <tr key={`${row[0]}-${rowIndex}`} onClick={() => notify(`${row[0].split("\n")[0]} opened`)}>
+                  <tr key={`${row[0]}-${rowIndex}`} onClick={() => onRowOpen ? onRowOpen(row) : notify(`${row[0].split("\n")[0]} opened`)}>
                     {row.map((cell, cellIndex) => (
                       <td key={`${cell}-${cellIndex}`}>
                         {cellIndex === 0 ? <div className="primary-cell"><span className={`record-icon tone-${rowIndex % 5}`}><Icon name={config.icon} size={15} /></span><span>{cell.split("\n").map((line, lineIndex) => lineIndex === 0 ? <strong key={line}>{line}</strong> : <small key={line}>{line}</small>)}</span></div>
@@ -390,7 +405,7 @@ function ModulePage({ config, search, notify, onPrimary }: { config: ModuleConfi
                           : <span className={cell.startsWith("₹") ? "table-money" : ""}>{cell}</span>}
                       </td>
                     ))}
-                    <td><button className="row-more" aria-label="More actions" onClick={(event) => { event.stopPropagation(); notify("Record actions opened"); }}><Icon name="more" size={18} /></button></td>
+                    <td><button className="row-more" aria-label={onRowOpen ? "Open record" : "More actions"} onClick={(event) => { event.stopPropagation(); if (onRowOpen) onRowOpen(row); else notify("Record actions opened"); }}><Icon name={onRowOpen ? "chevron" : "more"} size={18} /></button></td>
                   </tr>
                 ))}
               </tbody>
@@ -500,19 +515,80 @@ const formFields: Record<string, { label: string; placeholder: string; type?: "s
     { label: "Full name", placeholder: "Staff member name", required: true },
     { label: "Email address", placeholder: "name@greenhome.in", required: true },
     { label: "Mobile number", placeholder: "+91" },
-    { label: "Role preset", placeholder: "Select one of four approved roles", type: "select", options: ["Owner / Admin", "Office Staff", "Site Supervisor", "Store / Godown Staff"], required: true },
+    { label: "Role preset", placeholder: "Select a role", type: "select", options: ["Owner / Admin", "Office Staff", "Site Supervisor", "Store / Godown Staff", "UltraTech Technical Executive", "Labour / Field Worker"], required: true },
     { label: "Assigned sites", placeholder: "Applicable to Site Supervisor" },
     { label: "Account note", placeholder: "Optional internal note", type: "textarea" },
   ],
 };
 
-function FormDrawer({ module, onClose, onSave }: { module: string; onClose: () => void; onSave: () => void }) {
+function FormDrawer({ module, onClose, onSave, initialValues, editing }: { module: string; onClose: () => void; onSave: (values: Record<string, string>, files: Record<string, File>) => Promise<string | null>; initialValues?: Record<string, string>; editing?: boolean }) {
   const fields = formFields[module] || [
     { label: "Related site", placeholder: "Select Site ID", type: "select" as const, options: ["GH-0148 · Krishna Residency", "GH-0147 · Aarunya Villa"], required: true },
     { label: "Details", placeholder: "Enter record details", type: "textarea" as const, required: true },
     { label: "Supporting document", placeholder: "Upload file", type: "file" as const },
   ];
-  const title = module === "Labour Expense Claims" ? "New expense claim" : module === "Sites" ? "Add new site" : module === "Customers" ? "Add customer" : module === "Work Progress" ? "Post progress update" : module === "Invoices & Payments" ? "Create invoice" : `Add ${module.toLowerCase()} record`;
+  const createTitle = module === "Labour Expense Claims" ? "New expense claim" : module === "Sites" ? "Add new site" : module === "Customers" ? "Add customer" : module === "Work Progress" ? "Post progress update" : module === "Invoices & Payments" ? "Create invoice" : `Add ${module.toLowerCase()} record`;
+  const title = editing && module === "Customers" ? "Edit customer" : editing && module === "Sites" ? "Edit site" : createTitle;
+  const [values, setValues] = useState<Record<string, string>>(initialValues || {});
+  const [files, setFiles] = useState<Record<string, File>>({});
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [dynamicOptions, setDynamicOptions] = useState<Record<string, string[]>>({});
+  const [customerChoices, setCustomerChoices] = useState<{ id: string; name: string; phone: string; address: string }[]>([]);
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [customerPickerOpen, setCustomerPickerOpen] = useState(false);
+  const [sameAsCustomerAddress, setSameAsCustomerAddress] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const loadOptions = async () => {
+      const next: Record<string, string[]> = {};
+      if (module === "Sites") {
+        const [{ data: customers }, { data: supervisors }] = await Promise.all([
+          supabase.from("customers").select("id, name, primary_mobile, billing_address").is("archived_at", null).order("name"),
+          supabase.from("profiles").select("full_name").eq("active", true).eq("role", "site_supervisor").order("full_name"),
+        ]);
+        if (customers?.length) {
+          setCustomerChoices(customers.map((customer) => ({ id: customer.id, name: customer.name, phone: customer.primary_mobile, address: customer.billing_address || "" })));
+          const selected = customers.find((customer) => customer.id === initialValues?.Customer);
+          if (selected) {
+            setCustomerSearch(`${selected.name} · ${selected.primary_mobile}`);
+            if (selected.billing_address && selected.billing_address === initialValues?.["Site address"]) setSameAsCustomerAddress(true);
+          }
+        }
+        if (supervisors?.length) next["Assigned supervisor"] = supervisors.map((profile) => profile.full_name);
+      }
+      if (["Quotations", "Godown & Materials", "Labour & Attendance", "Work Progress", "Labour Expense Claims", "Invoices & Payments"].includes(module)) {
+        const { data: sites } = await supabase.from("sites").select("site_code, project_name").is("archived_at", null).order("site_code", { ascending: false });
+        if (sites?.length) next.Site = sites.map((site) => `${site.site_code} · ${site.project_name}`);
+      }
+      if (module === "Godown & Materials") {
+        const { data: products } = await supabase.from("products").select("name").eq("active", true).order("name");
+        if (products?.length) next.Product = products.map((product) => product.name);
+      }
+      if (["Labour & Attendance", "Labour Expense Claims"].includes(module)) {
+        const { data: labourers } = await supabase.from("labourers").select("name").eq("active", true).order("name");
+        if (labourers?.length) next.Labourer = labourers.map((labourer) => labourer.name);
+      }
+      if (active) setDynamicOptions(next);
+    };
+    void loadOptions();
+    return () => { active = false; };
+  }, [module, initialValues?.Customer]);
+
+  const submit = async () => {
+    const missing = fields.find((field) => field.required && field.type !== "file" && !values[field.label]?.trim());
+    const missingFile = fields.find((field) => field.required && field.type === "file" && !files[field.label]);
+    if (missing || missingFile) {
+      setSaveError(`${(missing || missingFile)?.label} is required.`);
+      return;
+    }
+    setSaving(true);
+    setSaveError("");
+    const error = await onSave(values, files);
+    setSaving(false);
+    if (error) setSaveError(error);
+  };
 
   return (
     <div className="drawer-layer" role="dialog" aria-modal="true" aria-label={title}>
@@ -524,34 +600,52 @@ function FormDrawer({ module, onClose, onSave }: { module: string; onClose: () =
         </header>
         {module === "Sites" && <div className="form-notice"><Icon name="shield" size={17} /><span><strong>Internal Site ID is automatic</strong><small>The next ID will be generated after saving. UltraTech SR ID remains optional.</small></span></div>}
         {module === "Godown & Materials" && <div className="form-notice"><Icon name="box" size={17} /><span><strong>Confirmed transactions update stock</strong><small>Site issues that would create negative stock are blocked automatically.</small></span></div>}
-        {module === "Users & Settings" && <div className="form-notice"><Icon name="shield" size={17} /><span><strong>Phase 1 role presets</strong><small>Access is limited to the four agreed roles. Custom permission matrices are postponed.</small></span></div>}
         <div className="drawer-form">
-          {fields.map((field) => (
+          {fields.map((field) => field.label === "Site address" && module === "Sites" ? (
+            <div className="site-address-field span-two" key={field.label}>
+              <div className="field-label-row"><span>{field.label}{field.required && <b> *</b>}</span><label><input type="checkbox" checked={sameAsCustomerAddress} disabled={!customerChoices.find((choice) => choice.id === values.Customer)?.address} onChange={(event) => { const checked = event.target.checked; setSameAsCustomerAddress(checked); if (checked) { const customer = customerChoices.find((choice) => choice.id === values.Customer); if (customer?.address) setValues((current) => ({ ...current, "Site address": customer.address })); } }} /><span>Same as customer address</span></label></div>
+              <textarea rows={3} placeholder={field.placeholder} value={values[field.label] || ""} readOnly={sameAsCustomerAddress} onChange={(event) => setValues((current) => ({ ...current, [field.label]: event.target.value }))} />
+              {sameAsCustomerAddress && !customerChoices.find((choice) => choice.id === values.Customer)?.address && <small className="address-warning">The selected customer does not have a saved billing address.</small>}
+            </div>
+          ) : (
             <label className={field.type === "textarea" ? "span-two" : ""} key={field.label}>
               <span>{field.label}{field.required && <b> *</b>}</span>
-              {field.type === "select" ? <select defaultValue=""><option value="" disabled>{field.placeholder}</option>{field.options?.map((option) => <option key={option}>{option}</option>)}</select>
-                : field.type === "textarea" ? <textarea rows={3} placeholder={field.placeholder} />
-                : field.type === "file" ? <span className="file-drop"><Icon name="document" size={18} /><span><strong>{field.placeholder}</strong><small>PDF, JPG or PNG · max 10 MB</small></span></span>
-                : <input placeholder={field.placeholder} />}
+              {module === "Sites" && field.label === "Customer" ? <div className="customer-picker">
+                <div className="customer-picker-input"><Icon name="search" size={15} /><input value={customerSearch} placeholder="Search customer name or phone…" onFocus={() => setCustomerPickerOpen(true)} onBlur={() => window.setTimeout(() => setCustomerPickerOpen(false), 120)} onChange={(event) => { setCustomerSearch(event.target.value); setSameAsCustomerAddress(false); setValues((current) => ({ ...current, Customer: "" })); setCustomerPickerOpen(true); }} /></div>
+                {customerPickerOpen && <div className="customer-picker-menu">
+                  {customerChoices.filter((customer) => `${customer.name} ${customer.phone}`.toLowerCase().includes(customerSearch.toLowerCase())).map((customer) => <button type="button" key={customer.id} onMouseDown={(event) => event.preventDefault()} onClick={() => { if (sameAsCustomerAddress && !customer.address) setSameAsCustomerAddress(false); setValues((current) => ({ ...current, Customer: customer.id, ...(sameAsCustomerAddress && customer.address ? { "Site address": customer.address } : {}) })); setCustomerSearch(`${customer.name} · ${customer.phone}`); setCustomerPickerOpen(false); }}><span className="customer-choice-avatar">{customer.name.slice(0, 2).toUpperCase()}</span><span><strong>{customer.name}</strong><small>{customer.phone}</small></span>{values.Customer === customer.id && <Icon name="check" size={14} />}</button>)}
+                  {!customerChoices.filter((customer) => `${customer.name} ${customer.phone}`.toLowerCase().includes(customerSearch.toLowerCase())).length && <div className="customer-picker-empty">No customer matches this name or phone number.</div>}
+                </div>}
+              </div>
+                : field.type === "select" ? <select value={values[field.label] || ""} onChange={(event) => setValues((current) => ({ ...current, [field.label]: event.target.value }))}><option value="" disabled>{field.placeholder}</option>{(dynamicOptions[field.label] || field.options)?.map((option) => <option key={option}>{option}</option>)}</select>
+                : field.type === "textarea" ? <textarea rows={3} placeholder={field.placeholder} value={values[field.label] || ""} onChange={(event) => setValues((current) => ({ ...current, [field.label]: event.target.value }))} />
+                : field.type === "file" ? <span className="file-drop"><input type="file" accept=".pdf,image/jpeg,image/png,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (file) setFiles((current) => ({ ...current, [field.label]: file })); }} /><Icon name="document" size={18} /><span><strong>{files[field.label]?.name || field.placeholder}</strong><small>PDF, JPG, PNG or WebP · max 10 MB</small></span></span>
+                : <input placeholder={field.placeholder} value={values[field.label] || ""} onChange={(event) => setValues((current) => ({ ...current, [field.label]: event.target.value }))} />}
             </label>
           ))}
           {module === "Labour Expense Claims" && <div className="receipt-warning span-two"><Icon name="alert" size={16} /><span>If no receipt is attached, the claim will be clearly marked <strong>No receipt</strong> and a reason will be required.</span></div>}
+          {saveError && <div className="save-error span-two"><Icon name="alert" size={16} /><span>{saveError}</span></div>}
         </div>
-        <footer><Button variant="secondary" onClick={onClose}>Cancel</Button><Button icon="check" onClick={onSave}>Save record</Button></footer>
+        <footer><Button variant="secondary" onClick={onClose}>Cancel</Button><Button icon="check" onClick={submit}>{saving ? "Saving…" : editing ? `Update ${module === "Sites" ? "site" : "customer"}` : "Save record"}</Button></footer>
       </aside>
     </div>
   );
 }
 
-function InspectionCalculator({ onBack, notify }: { onBack: () => void; notify: (message: string) => void }) {
-  const inspectionSites = [
-    { id: "GH-0147", name: "Aarunya Villa", customer: "Ananya Sharma", address: "Whitefield, Bengaluru", areas: "Toilet, Balcony" },
-    { id: "GH-0148", name: "Krishna Residency", customer: "Raghavendra Rao", address: "Jayanagar, Bengaluru", areas: "Terrace, Utility" },
-    { id: "GH-0145", name: "Prestige Warehouse", customer: "Karthik Industries", address: "Hosur Road, Bengaluru", areas: "Terrace, External wall" },
-  ];
-  const [siteId, setSiteId] = useState("GH-0147");
-  const selectedSite = inspectionSites.find((site) => site.id === siteId) ?? inspectionSites[0];
+function InspectionCalculator({ onBack, notify, onSaved, existingInspectionId }: { onBack: () => void; notify: (message: string) => void; onSaved: () => Promise<void>; existingInspectionId?: string | null }) {
+  const [inspectionSites, setInspectionSites] = useState<{ id: string; name: string; customer: string; address: string; areas: string }[]>([]);
+  const [siteId, setSiteId] = useState("");
+  const selectedSite = inspectionSites.find((site) => site.id === siteId);
   const [buildingType, setBuildingType] = useState("Existing building");
+  const [applicationArea, setApplicationArea] = useState("Toilet");
+  const [surfaceWetness, setSurfaceWetness] = useState("Damp");
+  const [selectedProblems, setSelectedProblems] = useState<string[]>(["Leakage / Seepage"]);
+  const [findings, setFindings] = useState("");
+  const [inspectionPhotos, setInspectionPhotos] = useState<File[]>([]);
+  const [savedInspectionId, setSavedInspectionId] = useState<string | null>(existingInspectionId || null);
+  const [savingInspection, setSavingInspection] = useState(false);
+  const [inspectionError, setInspectionError] = useState("");
+  const [sitesLoading, setSitesLoading] = useState(true);
   const [length, setLength] = useState("4");
   const [width, setWidth] = useState("6");
   const [height, setHeight] = useState("7");
@@ -569,37 +663,234 @@ function InspectionCalculator({ onBack, notify }: { onBack: () => void; notify: 
   const terraceGross = number(terraceLength) * number(terraceWidth);
   const terraceNet = Math.max(0, terraceGross - number(terraceDeduction));
 
+  useEffect(() => {
+    let active = true;
+    supabase
+      .from("sites")
+      .select("site_code, project_name, address, application_areas, customers(name)")
+      .is("archived_at", null)
+      .order("site_code", { ascending: false })
+      .then(({ data, error }) => {
+        if (!active) return;
+        setSitesLoading(false);
+        if (error) {
+          setInspectionError(`Loading accessible sites: ${error.message}`);
+          return;
+        }
+        if (!data?.length) {
+          setInspectionSites([]);
+          setSiteId("");
+          return;
+        }
+        const mapped = data.map((site: any) => ({
+          id: site.site_code,
+          name: site.project_name,
+          customer: Array.isArray(site.customers) ? site.customers[0]?.name || "Customer" : site.customers?.name || "Customer",
+          address: site.address,
+          areas: (site.application_areas || []).join(", "),
+        }));
+        setInspectionSites(mapped);
+        setSiteId((current) => mapped.some((site) => site.id === current) ? current : mapped[0].id);
+      });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!existingInspectionId) setSavedInspectionId(null);
+  }, [siteId, existingInspectionId]);
+
+  useEffect(() => {
+    if (!existingInspectionId) return;
+    let active = true;
+    const loadInspection = async () => {
+      setSavingInspection(true);
+      setInspectionError("");
+      const [inspectionResult, toiletResult, terraceResult] = await Promise.all([
+        supabase.from("inspections").select("id, site_id, building_type, application_areas, surface_wetness, observed_problems, findings, status").eq("id", existingInspectionId).single(),
+        supabase.from("toilet_measurements").select("floor_length_ft, floor_width_ft, wall_height_ft, door_deduction_ft, additional_opening_deduction_ft").eq("inspection_id", existingInspectionId).eq("toilet_id", "T1").maybeSingle(),
+        supabase.from("terrace_sections").select("length_ft, width_ft, approved_exclusion_sqft").eq("inspection_id", existingInspectionId).eq("section_name", "Section A").maybeSingle(),
+      ]);
+      if (!active) return;
+      if (inspectionResult.error || !inspectionResult.data) {
+        setInspectionError(`Loading inspection: ${inspectionResult.error?.message || "Record not found"}`);
+        setSavingInspection(false);
+        return;
+      }
+      const { data: linkedSite, error: linkedSiteError } = await supabase.from("sites").select("site_code").eq("id", inspectionResult.data.site_id).single();
+      if (linkedSiteError || !linkedSite) {
+        setInspectionError(`Loading linked Site: ${linkedSiteError?.message || "Site not found"}`);
+        setSavingInspection(false);
+        return;
+      }
+      const inspection = inspectionResult.data;
+      setSiteId(linkedSite.site_code);
+      setBuildingType(inspection.building_type === "new" ? "New building" : "Existing building");
+      setApplicationArea(inspection.application_areas?.[0] ? displayStatus(inspection.application_areas[0]) : "Toilet");
+      const wetnessLabels: Record<string, string> = { dry: "Dry", damp: "Damp", wet_standing_water: "Wet / Standing Water" };
+      setSurfaceWetness(wetnessLabels[inspection.surface_wetness] || "Damp");
+      const problemLabels: Record<string, string> = {
+        leakage_seepage: "Leakage / Seepage",
+        dampness: "Dampness",
+        cracks: "Cracks",
+        peeling: "Peeling",
+        water_stagnation: "Water stagnation",
+        failed_coating: "Failed coating",
+      };
+      setSelectedProblems((inspection.observed_problems || []).map((problem: string) => problemLabels[problem] || displayStatus(problem)));
+      setFindings(inspection.findings || "");
+      if (toiletResult.data) {
+        setLength(String(toiletResult.data.floor_length_ft));
+        setWidth(String(toiletResult.data.floor_width_ft));
+        setHeight(String(toiletResult.data.wall_height_ft));
+        setDoor(String(toiletResult.data.door_deduction_ft));
+        setOtherOpening(String(toiletResult.data.additional_opening_deduction_ft));
+      }
+      if (terraceResult.data) {
+        setTerraceLength(String(terraceResult.data.length_ft));
+        setTerraceWidth(String(terraceResult.data.width_ft));
+        setTerraceDeduction(String(terraceResult.data.approved_exclusion_sqft));
+      }
+      setSavedInspectionId(existingInspectionId);
+      setSavingInspection(false);
+    };
+    void loadInspection();
+    return () => { active = false; };
+  }, [existingInspectionId]);
+
+  const persistInspection = async (status: "draft" | "submitted") => {
+    setSavingInspection(true);
+    setInspectionError("");
+    let saveStage = "Linking the selected site";
+    let inspectionId = savedInspectionId;
+    try {
+      if (!siteId || !selectedSite) throw new Error("Select a Site that is accessible to your account before saving the inspection.");
+      const [{ data: site, error: siteError }, { data: authData }] = await Promise.all([
+        supabase.from("sites").select("id").eq("site_code", siteId).single(),
+        supabase.auth.getUser(),
+      ]);
+      if (siteError || !site) throw new Error("The linked site was not found in Supabase.");
+      if (!authData.user) throw new Error("Your session has expired.");
+
+      saveStage = "Saving the inspection record";
+      if (inspectionId) {
+        const { error } = await supabase.from("inspections").update({
+          building_type: buildingType === "New building" ? "new" : "existing",
+          application_areas: [applicationArea.toLowerCase().replaceAll(" ", "_")],
+          surface_wetness: surfaceWetness.toLowerCase().replaceAll(" / ", "_").replaceAll(" ", "_"),
+          observed_problems: selectedProblems.map((problem) => problem.toLowerCase().replaceAll(" / ", "_").replaceAll(" ", "_")),
+          findings: findings || null,
+          status,
+        }).eq("id", inspectionId);
+        if (error) throw error;
+      } else {
+        const { data: latest } = await supabase.from("inspections").select("visit_number").eq("site_id", site.id).order("visit_number", { ascending: false }).limit(1).maybeSingle();
+        const { data, error } = await supabase.from("inspections").insert({
+          site_id: site.id,
+          visit_number: (latest?.visit_number || 0) + 1,
+          inspected_at: new Date().toISOString(),
+          inspector_id: authData.user.id,
+          building_type: buildingType === "New building" ? "new" : "existing",
+          application_areas: [applicationArea.toLowerCase().replaceAll(" ", "_")],
+          surface_wetness: surfaceWetness.toLowerCase().replaceAll(" / ", "_").replaceAll(" ", "_"),
+          observed_problems: selectedProblems.map((problem) => problem.toLowerCase().replaceAll(" / ", "_").replaceAll(" ", "_")),
+          findings: findings || null,
+          status,
+        }).select("id").single();
+        if (error || !data) throw error || new Error("Inspection could not be created.");
+        inspectionId = data.id;
+        setSavedInspectionId(data.id);
+      }
+
+      await onSaved();
+      saveStage = "Saving measurements";
+      const [{ error: toiletError }, { error: terraceError }] = await Promise.all([
+        supabase.from("toilet_measurements").upsert({
+          inspection_id: inspectionId,
+          toilet_id: "T1",
+          floor_length_ft: number(length),
+          floor_width_ft: number(width),
+          wall_height_ft: number(height),
+          door_deduction_ft: number(door),
+          additional_opening_deduction_ft: number(otherOpening),
+        }, { onConflict: "inspection_id,toilet_id" }),
+        supabase.from("terrace_sections").upsert({
+          inspection_id: inspectionId,
+          section_name: "Section A",
+          length_ft: number(terraceLength),
+          width_ft: number(terraceWidth),
+          approved_exclusion_sqft: number(terraceDeduction),
+        }, { onConflict: "inspection_id,section_name" }),
+      ]);
+      if (toiletError) throw toiletError;
+      if (terraceError) throw terraceError;
+
+      saveStage = "Uploading inspection photos";
+      for (const file of inspectionPhotos) {
+        if (file.size > 10 * 1024 * 1024) throw new Error(`${file.name} is larger than 10 MB.`);
+        const objectPath = `${site.id}/inspection_photo/${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "-")}`;
+        const { error: uploadError } = await supabase.storage.from("site-files").upload(objectPath, file, { contentType: file.type });
+        if (uploadError) throw uploadError;
+        const { error: fileError } = await supabase.from("site_files").insert({
+          site_id: site.id,
+          inspection_id: inspectionId,
+          category: "inspection_photo",
+          caption: file.name,
+          bucket_id: "site-files",
+          object_path: objectPath,
+          mime_type: file.type,
+          size_bytes: file.size,
+          uploaded_by: authData.user.id,
+          captured_at: new Date().toISOString(),
+        });
+        if (fileError) throw fileError;
+      }
+      setInspectionPhotos([]);
+      saveStage = "Refreshing the inspection list";
+      await onSaved();
+      notify(status === "draft" ? `Draft inspection saved to ${siteId}` : `Inspection submitted for ${siteId}`);
+      if (status === "submitted") onBack();
+    } catch (error) {
+      if (inspectionId) await onSaved();
+      const message = `${saveStage}: ${errorMessage(error)}`;
+      setInspectionError(message);
+      notify(message);
+    } finally {
+      setSavingInspection(false);
+    }
+  };
+
   return (
     <div className="content functional-page">
       <button className="back-link" onClick={onBack}><Icon name="chevron" size={14} />Back to inspections</button>
       <section className="page-heading module-heading">
-        <div><p className="eyebrow">NEW INSPECTION · {selectedSite.id}</p><h1>Inspection & measurement</h1><p>{selectedSite.name} · {selectedSite.address}</p></div>
-        <div className="heading-actions"><Button variant="secondary" onClick={() => notify(`Draft inspection saved to ${selectedSite.id}`)}>Save draft</Button><Button icon="check" onClick={() => notify(`Inspection submitted for ${selectedSite.id}`)}>Submit inspection</Button></div>
+        <div><p className="eyebrow">{existingInspectionId ? "EDIT INSPECTION" : "NEW INSPECTION"}{selectedSite ? ` · ${selectedSite.id}` : ""}</p><h1>Inspection & measurement</h1><p>{selectedSite ? `${selectedSite.name} · ${selectedSite.address}` : "Select an accessible Site to begin"}</p></div>
+        <div className="heading-actions"><Button variant="secondary" onClick={() => persistInspection("draft")}>{savingInspection ? "Saving…" : "Save draft"}</Button><Button icon="check" onClick={() => persistInspection("submitted")}>{savingInspection ? "Saving…" : "Submit inspection"}</Button></div>
       </section>
       <div className="stepper">
         {["Site details", "Inspection", "Measurements", "Photos", "Review"].map((step, index) => <div className={index <= 2 ? "done" : ""} key={step}><span>{index < 2 ? <Icon name="check" size={12} /> : index + 1}</span><b>{step}</b></div>)}
       </div>
+      {inspectionError && <div className="inspection-error"><Icon name="alert" size={16} /><span><strong>Inspection was not saved.</strong>{inspectionError}</span></div>}
       <div className="functional-grid">
         <section className="panel calculator-panel">
           <div className="form-section-head"><div><span className="section-number">01</span><div><h2>Linked site</h2><p>Every inspection and measurement record belongs to one saved site.</p></div></div><span className="required-chip">Required</span></div>
           <div className="site-association">
-            <label><span>Internal Site ID / project</span><select value={siteId} onChange={(event) => setSiteId(event.target.value)}>{inspectionSites.map((site) => <option value={site.id} key={site.id}>{site.id} · {site.name}</option>)}</select></label>
-            <div className="linked-site-details">
+            <label><span>Internal Site ID / project</span><select value={siteId} disabled={Boolean(existingInspectionId) || sitesLoading || !inspectionSites.length} onChange={(event) => setSiteId(event.target.value)}><option value="">{sitesLoading ? "Loading accessible sites…" : inspectionSites.length ? "Select site" : "No accessible sites found"}</option>{inspectionSites.map((site) => <option value={site.id} key={site.id}>{site.id} · {site.name}</option>)}</select></label>
+            {selectedSite ? <div className="linked-site-details">
               <span className="record-icon"><Icon name="building" size={17} /></span>
               <div><small>Customer</small><strong>{selectedSite.customer}</strong></div>
               <div><small>Site address</small><strong>{selectedSite.address}</strong></div>
               <div><small>Application areas</small><strong>{selectedSite.areas}</strong></div>
               <span className="linked-badge"><Icon name="check" size={11} />Linked</span>
-            </div>
+            </div> : <div className="no-site-access"><Icon name="alert" size={16} /><span>No Site is available for inspection. Assign this user to a Site or sign in with an account that has Site access.</span></div>}
           </div>
 
-          <div className="form-section-head divider-top"><div><span className="section-number">02</span><div><h2>Building assessment</h2><p>Record the inspection type and observed site conditions for {selectedSite.id}.</p></div></div></div>
+          <div className="form-section-head divider-top"><div><span className="section-number">02</span><div><h2>Building assessment</h2><p>Record the inspection type and observed site conditions{selectedSite ? ` for ${selectedSite.id}` : ""}.</p></div></div></div>
           <div className="segmented">{["New building", "Existing building"].map((type) => <button className={buildingType === type ? "active" : ""} onClick={() => setBuildingType(type)} key={type}>{type}</button>)}</div>
           <div className="inspection-fields">
-            <label><span>Application area</span><select><option>Toilet</option><option>Terrace</option><option>Balcony</option><option>Sump</option><option>Water Tank</option></select></label>
-            <label><span>Surface wetness</span><select><option>Dry</option><option>Damp</option><option>Wet / Standing Water</option></select></label>
-            <label className="span-two"><span>{buildingType === "Existing building" ? "Observed problems" : "Surface condition"}</span><div className="choice-grid">{(buildingType === "Existing building" ? ["Leakage / Seepage", "Dampness", "Cracks", "Peeling", "Water stagnation", "Failed coating"] : ["Clean", "Dust present", "Loose material", "Debris present"]).map((choice) => <button key={choice}>{choice}</button>)}</div></label>
-            <label className="span-two"><span>Findings and suspected cause</span><textarea rows={3} placeholder="Describe the exact problem location and your findings…" /></label>
+            <label><span>Application area</span><select value={applicationArea} onChange={(event) => setApplicationArea(event.target.value)}><option>Toilet</option><option>Terrace</option><option>Balcony</option><option>Sump</option><option>Water Tank</option></select></label>
+            <label><span>Surface wetness</span><select value={surfaceWetness} onChange={(event) => setSurfaceWetness(event.target.value)}><option>Dry</option><option>Damp</option><option>Wet / Standing Water</option></select></label>
+            <label className="span-two"><span>{buildingType === "Existing building" ? "Observed problems" : "Surface condition"}</span><div className="choice-grid">{(buildingType === "Existing building" ? ["Leakage / Seepage", "Dampness", "Cracks", "Peeling", "Water stagnation", "Failed coating"] : ["Clean", "Dust present", "Loose material", "Debris present"]).map((choice) => <button className={selectedProblems.includes(choice) ? "selected" : ""} onClick={() => setSelectedProblems((current) => current.includes(choice) ? current.filter((item) => item !== choice) : [...current, choice])} key={choice}>{choice}</button>)}</div></label>
+            <label className="span-two"><span>Findings and suspected cause</span><textarea rows={3} placeholder="Describe the exact problem location and your findings…" value={findings} onChange={(event) => setFindings(event.target.value)} /></label>
           </div>
 
           <div className="form-section-head divider-top"><div><span className="section-number">03</span><div><h2>Toilet T1 measurement</h2><p>Wall height is always entered manually. Opening deductions apply only when excluded from scope.</p></div></div><button className="small-action"><Icon name="plus" size={13} />Add toilet</button></div>
@@ -634,7 +925,7 @@ function InspectionCalculator({ onBack, notify }: { onBack: () => void; notify: 
             <div className="grand-total"><span>Grand total</span><strong>{(toiletTotal + terraceNet).toFixed(1)} <small>sq ft</small></strong></div>
           </section>
           <section className="panel test-card"><span><Icon name="check" size={15} /></span><div><strong>Approved test case matches</strong><p>4 × 6 ft, wall 7 ft, door 2.5 ft produces a combined total of 146.5 sq ft.</p></div></section>
-          <section className="panel photo-drop"><Icon name="document" size={22} /><strong>Add inspection photos</strong><span>Caption and area label required</span><button onClick={() => notify("Photo picker opened")}>Choose photos</button></section>
+          <section className="panel photo-drop"><Icon name="document" size={22} /><strong>{inspectionPhotos.length ? `${inspectionPhotos.length} photo(s) selected` : "Add inspection photos"}</strong><span>Files are uploaded when the inspection is saved</span><label><input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => setInspectionPhotos(Array.from(event.target.files || []))} />Choose photos</label></section>
         </aside>
       </div>
     </div>
@@ -692,23 +983,23 @@ const demoUsers: DemoUser[] = [
   { name: "Site Supervisor", email: "super@gmail.com", role: "Site Supervisor", initials: "SV" },
 ];
 
-function AuthScreen({ screen, setScreen, onLogin }: { screen: "login" | "forgot" | "reset"; setScreen: (screen: "login" | "forgot" | "reset") => void; onLogin: (user: DemoUser) => void }) {
+function AuthScreen({ screen, setScreen, onLogin }: { screen: "login" | "forgot" | "reset"; setScreen: (screen: "login" | "forgot" | "reset") => void; onLogin: (email: string, password: string) => Promise<string | null> }) {
   const copy = screen === "login" ? { eyebrow: "SECURE STAFF ACCESS", title: "Welcome back", detail: "Sign in to manage Green Home sites and operations." } : screen === "forgot" ? { eyebrow: "PASSWORD RECOVERY", title: "Reset your password", detail: "Enter your registered email and we’ll send a secure reset link." } : { eyebrow: "CREATE NEW PASSWORD", title: "Choose a new password", detail: "Use at least 8 characters with a number and special character." };
   const [email, setEmail] = useState(demoUsers[0].email);
   const [password, setPassword] = useState("test123");
   const [loginError, setLoginError] = useState("");
+  const [signingIn, setSigningIn] = useState(false);
   const selectAccount = (user: DemoUser) => {
     setEmail(user.email);
     setPassword("test123");
     setLoginError("");
   };
-  const submitLogin = () => {
-    const user = demoUsers.find((candidate) => candidate.email === email.trim().toLowerCase());
-    if (!user || password !== "test123") {
-      setLoginError("Use one of the listed demo accounts with password test123.");
-      return;
-    }
-    onLogin(user);
+  const submitLogin = async () => {
+    setSigningIn(true);
+    setLoginError("");
+    const error = await onLogin(email.trim().toLowerCase(), password);
+    if (error) setLoginError(error);
+    setSigningIn(false);
   };
   return (
     <div className="auth-page">
@@ -728,7 +1019,7 @@ function AuthScreen({ screen, setScreen, onLogin }: { screen: "login" | "forgot"
             <label><span>Email address</span><div><Icon name="user" size={16} /><input type="email" value={email} onChange={(event) => { setEmail(event.target.value); setLoginError(""); }} /></div></label>
             <label><span>Password <button onClick={() => setScreen("forgot")}>Forgot password?</button></span><div><Icon name="shield" size={16} /><input type="password" value={password} onChange={(event) => { setPassword(event.target.value); setLoginError(""); }} /></div></label>
             {loginError && <div className="login-error"><Icon name="alert" size={14} />{loginError}</div>}
-            <Button onClick={submitLogin}>Sign in securely</Button>
+            <Button onClick={submitLogin}>{signingIn ? "Signing in…" : "Sign in securely"}</Button>
             <div className="demo-password"><span>Demo password</span><strong>test123</strong></div>
             <div className="auth-security"><Icon name="shield" size={15} />Demo authentication · Supabase Auth will replace this in production</div>
           </>}
@@ -736,6 +1027,165 @@ function AuthScreen({ screen, setScreen, onLogin }: { screen: "login" | "forgot"
           {screen === "reset" && <><label><span>New password</span><div><Icon name="shield" size={16} /><input type="password" placeholder="Enter new password" /></div></label><label><span>Confirm password</span><div><Icon name="shield" size={16} /><input type="password" placeholder="Repeat new password" /></div></label><Button onClick={() => setScreen("login")}>Update password</Button></>}
         </div>
       </section>
+    </div>
+  );
+}
+
+const roleLabels: Record<string, string> = {
+  owner_admin: "Owner / Admin",
+  office_staff: "Office Staff",
+  site_supervisor: "Site Supervisor",
+  store_staff: "Store / Godown Staff",
+  ultratech_technical_executive: "UltraTech Technical Executive",
+  labour_field_worker: "Labour / Field Worker",
+};
+
+function UsersSettingsPage({ profiles, notify, refresh, navigate, onInvite }: { profiles: any[]; notify: (message: string) => void; refresh: () => Promise<void>; navigate: (page: string) => void; onInvite: () => void }) {
+  const [activeTab, setActiveTab] = useState("Users");
+  const [selectedUser, setSelectedUser] = useState<any | null>(null);
+  const [editUser, setEditUser] = useState<any | null>(null);
+  const [savingUser, setSavingUser] = useState(false);
+  const [auditEvents, setAuditEvents] = useState<any[]>([]);
+  const [selectedAudit, setSelectedAudit] = useState<any | null>(null);
+  const [auditAction, setAuditAction] = useState("All actions");
+  const [auditEntity, setAuditEntity] = useState("All records");
+  const [pendingItems, setPendingItems] = useState<{ id: string; title: string; detail: string; module: string; tone: string }[]>([]);
+  const [alertSettings, setAlertSettings] = useState({ visits: true, quotations: true, lowStock: true, overdue: false });
+
+  const loadAudit = async () => {
+    const { data, error } = await supabase.from("audit_events").select("id, actor_id, action, entity_type, entity_id, site_id, before_data, after_data, created_at").order("created_at", { ascending: false }).limit(100);
+    if (error) {
+      notify(error.message);
+      return;
+    }
+    setAuditEvents(data || []);
+  };
+
+  const loadPending = async () => {
+    const [inspectionResult, claimResult, attendanceResult, quotationResult] = await Promise.all([
+      supabase.from("inspections").select("id, site_id, inspected_at").eq("status", "submitted").limit(20),
+      supabase.from("expense_claims").select("id, claim_number, amount, site_id").eq("status", "submitted").limit(20),
+      supabase.from("attendance_entries").select("id, attendance_date, site_id").eq("status", "submitted").limit(20),
+      supabase.from("quotations").select("id, quotation_number, follow_up_date, site_id").eq("status", "follow_up_pending").limit(20),
+    ]);
+    const items = [
+      ...(inspectionResult.data || []).map((item) => ({ id: item.id, title: "Inspection awaiting review", detail: new Date(item.inspected_at).toLocaleDateString("en-IN"), module: "Inspections", tone: "blue" })),
+      ...(claimResult.data || []).map((item) => ({ id: item.id, title: `Expense claim ${item.claim_number}`, detail: `₹${Number(item.amount).toLocaleString("en-IN")} awaiting approval`, module: "Labour Expense Claims", tone: "amber" })),
+      ...(attendanceResult.data || []).map((item) => ({ id: item.id, title: "Attendance awaiting approval", detail: new Date(item.attendance_date).toLocaleDateString("en-IN"), module: "Labour & Attendance", tone: "green" })),
+      ...(quotationResult.data || []).map((item) => ({ id: item.id, title: `Follow-up ${item.quotation_number}`, detail: item.follow_up_date ? new Date(item.follow_up_date).toLocaleDateString("en-IN") : "No date assigned", module: "Quotations", tone: "red" })),
+    ];
+    setPendingItems(items);
+  };
+
+  useEffect(() => {
+    if (activeTab === "Audit Log") void loadAudit();
+    if (activeTab === "Pending Items") void loadPending();
+  }, [activeTab]);
+
+  const saveUser = async () => {
+    if (!editUser) return;
+    setSavingUser(true);
+    const { error } = await supabase.from("profiles").update({
+      full_name: editUser.full_name,
+      phone: editUser.phone || null,
+      role: editUser.role,
+      active: editUser.active,
+    }).eq("id", editUser.id);
+    setSavingUser(false);
+    if (error) {
+      notify(error.message);
+      return;
+    }
+    await refresh();
+    setSelectedUser({ ...editUser });
+    notify("User profile updated");
+  };
+
+  const openUser = (profile: any) => {
+    setSelectedUser(profile);
+    setEditUser({ ...profile });
+  };
+
+  const filteredAudit = auditEvents.filter((event) =>
+    (auditAction === "All actions" || event.action === auditAction) &&
+    (auditEntity === "All records" || event.entity_type === auditEntity)
+  );
+
+  return (
+    <div className="content module-content settings-workspace">
+      <section className="page-heading module-heading">
+        <div><p className="eyebrow">PHASE 1 ACCESS CONTROL</p><h1>Users & settings</h1><p>Manage staff accounts, role presets, operational alerts, company details and audit history.</p></div>
+        <Button icon="plus" onClick={onInvite}>Invite user</Button>
+      </section>
+
+      <section className="module-metrics">
+        <div className="module-metric"><span className="metric-dot green" /><div><span>ACTIVE USERS</span><strong>{profiles.filter((profile) => profile.active).length}</strong><small>Across six role presets</small></div></div>
+        <div className="module-metric"><span className="metric-dot blue" /><div><span>SUPERVISORS</span><strong>{profiles.filter((profile) => profile.role === "site_supervisor" && profile.active).length}</strong><small>Active site access</small></div></div>
+        <div className="module-metric"><span className="metric-dot amber" /><div><span>PENDING ITEMS</span><strong>{pendingItems.length || "—"}</strong><small>Load from task view</small></div></div>
+        <div className="module-metric"><span className="metric-dot green" /><div><span>ROLE PRESETS</span><strong>6</strong><small>Configured access profiles</small></div></div>
+      </section>
+
+      <section className="panel settings-panel">
+        <div className="settings-tabs">
+          {["Users", "Role Presets", "Alerts", "Business Profile", "Audit Log"].map((tab) => <button className={activeTab === tab ? "active" : ""} onClick={() => setActiveTab(tab)} key={tab}>{tab}</button>)}
+          <span />
+          <button className={activeTab === "Pending Items" ? "active" : ""} onClick={() => setActiveTab("Pending Items")}><Icon name="alert" size={14} />Pending items</button>
+          <button className={activeTab === "Audit Log" ? "active" : ""} onClick={() => setActiveTab("Audit Log")}><Icon name="clock" size={14} />Activity history</button>
+        </div>
+
+        {activeTab === "Users" && <div className="settings-view">
+          <div className="view-heading"><div><h2>Staff accounts</h2><p>Select a user to view details, change role or update account status.</p></div></div>
+          <div className="user-grid">
+            {profiles.map((profile) => <button className="user-card" onClick={() => openUser(profile)} key={profile.id}><span className="user-card-avatar">{(profile.full_name || profile.email).slice(0, 2).toUpperCase()}</span><span><strong>{profile.full_name || "Unnamed user"}</strong><small>{profile.email}</small><em>{roleLabels[profile.role] || displayStatus(profile.role)}</em></span><Status value={profile.active ? "Active" : "Suspended"} /><Icon name="chevron" size={15} /></button>)}
+            {!profiles.length && <div className="empty"><Icon name="people" size={22} /><strong>No staff profiles found</strong><span>Create users in Supabase Auth, then assign their roles here.</span></div>}
+          </div>
+        </div>}
+
+        {activeTab === "Role Presets" && <div className="settings-view">
+          <div className="view-heading"><div><h2>Role presets</h2><p>Six access profiles for office, site, technical and field teams.</p></div></div>
+          <div className="role-grid role-grid-six">
+            {[
+              ["Owner / Admin", "Full access", ["Users and settings", "Site activity", "Operations", "Finance and reports"]],
+              ["Office Staff", "Records access", ["Customers and sites", "Quotations", "Invoices and payments", "Basic reports"]],
+              ["Site Supervisor", "Assigned sites", ["Inspections", "Measurements", "Progress updates", "Site photos"]],
+              ["Store / Godown Staff", "Inventory access", ["Products", "Stock receipts", "Site issues", "Returns"]],
+              ["UltraTech Technical Executive", "Technical review", ["UltraTech sourced sites", "Inspection findings", "Measurements", "Progress review"]],
+              ["Labour / Field Worker", "Limited field access", ["Assigned work", "Own attendance", "Progress notes", "Expense claims"]],
+            ].map(([name, scope, permissions]: any) => <article className="role-card" key={name}><span><Icon name="shield" size={18} /></span><h3>{name}</h3><p>{scope}</p><ul>{permissions.map((permission: string) => <li key={permission}><Icon name="check" size={11} />{permission}</li>)}</ul></article>)}
+          </div>
+        </div>}
+
+        {activeTab === "Alerts" && <div className="settings-view narrow-view">
+          <div className="view-heading"><div><h2>Operational alerts</h2><p>Choose which Phase 1 events appear in the dashboard attention list.</p></div></div>
+          {[
+            ["visits", "Site visits due", "Show scheduled and overdue site visits"],
+            ["quotations", "Quotation follow-ups", "Show follow-ups due or overdue"],
+            ["lowStock", "Low stock", "Show products below their reorder threshold"],
+            ["overdue", "Overdue invoices", "Show invoices past their due date"],
+          ].map(([key, title, detail]) => <div className="setting-row" key={key}><span><strong>{title}</strong><small>{detail}</small></span><button className={`switch ${alertSettings[key as keyof typeof alertSettings] ? "on" : ""}`} onClick={() => setAlertSettings((current) => ({ ...current, [key]: !current[key as keyof typeof current] }))}><i /></button></div>)}
+          <Button onClick={() => notify("Alert preferences saved")}>Save alert preferences</Button>
+        </div>}
+
+        {activeTab === "Business Profile" && <div className="settings-view narrow-view">
+          <div className="view-heading"><div><h2>Business profile</h2><p>Details used in site reports and application branding.</p></div></div>
+          <div className="business-form"><label><span>Business name</span><input defaultValue="Green Home Building Solutions" /></label><label><span>Primary phone</span><input placeholder="+91" /></label><label><span>Email</span><input placeholder="office@greenhome.in" /></label><label><span>GSTIN</span><input placeholder="Optional GSTIN" /></label><label className="span-two"><span>Business address</span><textarea rows={3} defaultValue="Bengaluru, Karnataka" /></label></div>
+          <Button onClick={() => notify("Business profile saved")}>Save business profile</Button>
+        </div>}
+
+        {activeTab === "Pending Items" && <div className="settings-view">
+          <div className="view-heading"><div><h2>Pending approvals and tasks</h2><p>Open the relevant workspace to review each item.</p></div><button className="small-action" onClick={() => loadPending()}><Icon name="clock" size={13} />Refresh</button></div>
+          <div className="pending-list">{pendingItems.map((item) => <button onClick={() => navigate(item.module)} key={`${item.module}-${item.id}`}><span className={`alert-icon ${item.tone}`}><Icon name="document" size={16} /></span><span><strong>{item.title}</strong><small>{item.detail}</small></span><em>{item.module}</em><Icon name="chevron" size={15} /></button>)}{!pendingItems.length && <div className="empty"><Icon name="check" size={22} /><strong>No pending items</strong><span>There are no submitted approvals or follow-ups requiring action.</span></div>}</div>
+        </div>}
+
+        {activeTab === "Audit Log" && <div className="settings-view">
+          <div className="view-heading"><div><h2>Activity history</h2><p>Critical database changes recorded by Supabase audit triggers.</p></div><div className="audit-filters"><select value={auditAction} onChange={(event) => setAuditAction(event.target.value)}><option>All actions</option>{["insert", "update", "delete"].map((action) => <option key={action}>{action}</option>)}</select><select value={auditEntity} onChange={(event) => setAuditEntity(event.target.value)}><option>All records</option>{Array.from(new Set(auditEvents.map((event) => event.entity_type))).map((entity) => <option key={entity}>{entity}</option>)}</select></div></div>
+          <div className="audit-list">{filteredAudit.map((event) => <button onClick={() => setSelectedAudit(event)} key={event.id}><span className="audit-action">{event.action.slice(0, 1).toUpperCase()}</span><span><strong>{displayStatus(event.action)} {displayStatus(event.entity_type)}</strong><small>{new Date(event.created_at).toLocaleString("en-IN")}</small></span><code>{event.entity_id?.slice(0, 8) || "system"}</code><Icon name="chevron" size={15} /></button>)}{!filteredAudit.length && <div className="empty"><Icon name="clock" size={22} /><strong>No activity found</strong><span>Try different filters or create a record to generate an audit event.</span></div>}</div>
+        </div>}
+      </section>
+
+      {selectedUser && editUser && <div className="drawer-layer" role="dialog" aria-modal="true"><button className="drawer-scrim" aria-label="Close user details" onClick={() => setSelectedUser(null)} /><aside className="detail-drawer"><header><div><p className="eyebrow">USER DETAILS</p><h2>{selectedUser.full_name || selectedUser.email}</h2><span>{selectedUser.email}</span></div><button className="drawer-close" onClick={() => setSelectedUser(null)}><Icon name="close" size={18} /></button></header><div className="detail-body"><div className="user-identity"><span>{(selectedUser.full_name || selectedUser.email).slice(0, 2).toUpperCase()}</span><div><strong>{selectedUser.full_name}</strong><small>{roleLabels[selectedUser.role]} · {selectedUser.active ? "Active" : "Suspended"}</small></div></div><label><span>Full name</span><input value={editUser.full_name || ""} onChange={(event) => setEditUser({ ...editUser, full_name: event.target.value })} /></label><label><span>Email</span><input value={editUser.email || ""} disabled /></label><label><span>Phone</span><input value={editUser.phone || ""} onChange={(event) => setEditUser({ ...editUser, phone: event.target.value })} /></label><label><span>Role preset</span><select value={editUser.role} onChange={(event) => setEditUser({ ...editUser, role: event.target.value })}>{Object.entries(roleLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><div className="account-state"><span><strong>Account status</strong><small>Suspending access preserves all history.</small></span><Button variant="secondary" onClick={() => setEditUser({ ...editUser, active: !editUser.active })}>{editUser.active ? "Suspend user" : "Reactivate user"}</Button></div></div><footer><Button variant="secondary" onClick={() => setSelectedUser(null)}>Cancel</Button><Button icon="check" onClick={saveUser}>{savingUser ? "Saving…" : "Save changes"}</Button></footer></aside></div>}
+
+      {selectedAudit && <div className="drawer-layer" role="dialog" aria-modal="true"><button className="drawer-scrim" aria-label="Close activity details" onClick={() => setSelectedAudit(null)} /><aside className="detail-drawer"><header><div><p className="eyebrow">ACTIVITY DETAILS</p><h2>{displayStatus(selectedAudit.action)} {displayStatus(selectedAudit.entity_type)}</h2><span>{new Date(selectedAudit.created_at).toLocaleString("en-IN")}</span></div><button className="drawer-close" onClick={() => setSelectedAudit(null)}><Icon name="close" size={18} /></button></header><div className="detail-body audit-detail"><label><span>Record ID</span><input value={selectedAudit.entity_id || "System event"} disabled /></label><label><span>Site ID</span><input value={selectedAudit.site_id || "Not site-specific"} disabled /></label><div><span>Before</span><pre>{JSON.stringify(selectedAudit.before_data, null, 2) || "No previous value"}</pre></div><div><span>After</span><pre>{JSON.stringify(selectedAudit.after_data, null, 2) || "No new value"}</pre></div></div></aside></div>}
     </div>
   );
 }
@@ -748,19 +1198,124 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [profileOpen, setProfileOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [editingRecord, setEditingRecord] = useState<{ module: string; id: string; values: Record<string, string> } | null>(null);
+  const [editingInspectionId, setEditingInspectionId] = useState<string | null>(null);
   const [functionalScreen, setFunctionalScreen] = useState<"inspection" | "report" | null>(null);
   const [authScreen, setAuthScreen] = useState<"login" | "forgot" | "reset" | null>("login");
   const [currentUser, setCurrentUser] = useState<DemoUser>(demoUsers[0]);
+  const [authReady, setAuthReady] = useState(false);
+  const [liveCustomers, setLiveCustomers] = useState<any[] | null>(null);
+  const [liveSites, setLiveSites] = useState<any[] | null>(null);
+  const [liveProfiles, setLiveProfiles] = useState<any[]>([]);
+  const [liveInspections, setLiveInspections] = useState<any[] | null>(null);
+  const [dataError, setDataError] = useState("");
 
-  const visibleProjects = useMemo(() => projects.filter((project) => {
+  const dashboardProjects = useMemo(() => {
+    if (liveSites === null) return projects;
+    return liveSites.map((site, index) => {
+      const customer = liveCustomers?.find((item) => item.id === site.customer_id);
+      const supervisor = liveProfiles.find((profile) => profile.id === site.supervisor_id);
+      return {
+        id: site.site_code,
+        name: site.project_name,
+        client: customer?.name || "Customer",
+        location: site.address,
+        status: displayStatus(site.status),
+        type: site.application_areas?.length ? site.application_areas.map(displayStatus).join(", ") : "Site activity",
+        supervisor: supervisor?.full_name || "Unassigned",
+        initials: site.project_name.split(/\s+/).map((word: string) => word[0]).join("").slice(0, 2).toUpperCase(),
+        tone: ["sage", "sand", "blue", "rose", "violet"][index % 5],
+        value: "—",
+        date: site.visit_date ? new Date(site.visit_date).toLocaleDateString("en-IN", { day: "2-digit", month: "short" }) : "—",
+      };
+    });
+  }, [liveSites, liveCustomers, liveProfiles]);
+
+  const visibleProjects = useMemo(() => dashboardProjects.filter((project) => {
     const matchesFilter = projectFilter === "All" || project.status === projectFilter;
     const query = search.toLowerCase();
     return matchesFilter && [project.id, project.name, project.client, project.location].some((value) => value.toLowerCase().includes(query));
-  }), [projectFilter, search]);
+  }), [dashboardProjects, projectFilter, search]);
+
+  const liveModuleConfigs = useMemo(() => {
+    const configs = { ...moduleConfigs };
+    if (liveCustomers !== null) {
+      configs.Customers = {
+        ...moduleConfigs.Customers,
+        rows: liveCustomers.map((customer) => {
+          const customerSites = liveSites?.filter((site) => site.customer_id === customer.id) || [];
+          const activeSite = customerSites.find((site) => !["completed", "cancelled"].includes(site.status));
+          return [
+            `${customer.name}\n${customer.customer_code}`,
+            customer.primary_mobile,
+            `${customerSites.length} site${customerSites.length === 1 ? "" : "s"}`,
+            activeSite ? displayStatus(activeSite.status) : customerSites.length ? "Completed" : "No active work",
+            customer.notes || "—",
+            new Date(customer.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }),
+          ];
+        }),
+      };
+    }
+    if (liveSites !== null) {
+      configs.Sites = {
+        ...moduleConfigs.Sites,
+        rows: liveSites.map((site) => {
+          const customer = liveCustomers?.find((item) => item.id === site.customer_id);
+          const supervisor = liveProfiles.find((profile) => profile.id === site.supervisor_id);
+          return [
+            `${site.site_code}\n${site.project_name}`,
+            customer?.name || "Customer",
+            displayStatus(site.lead_source),
+            displayStatus(site.status),
+            supervisor?.full_name || "Unassigned",
+            site.notes || "No next action",
+          ];
+        }),
+      };
+    }
+    if (liveInspections !== null) {
+      configs.Inspections = {
+        ...moduleConfigs.Inspections,
+        rows: liveInspections.map((inspection) => {
+          const site = liveSites?.find((item) => item.id === inspection.site_id);
+          const inspector = liveProfiles.find((profile) => profile.id === inspection.inspector_id);
+          return [
+            `INS-${inspection.id.slice(0, 8).toUpperCase()}\nVisit ${inspection.visit_number} · ${new Date(inspection.inspected_at).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}`,
+            site ? `${site.site_code} · ${site.project_name}` : "Linked site",
+            inspection.building_type === "new" ? "New building" : "Existing building",
+            inspection.application_areas?.length ? inspection.application_areas.map(displayStatus).join(", ") : "—",
+            inspector?.full_name || "Assigned user",
+            displayStatus(inspection.status),
+          ];
+        }),
+      };
+    }
+    return configs;
+  }, [liveCustomers, liveSites, liveProfiles, liveInspections]);
 
   const notify = (message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(""), 2600);
+  };
+
+  const loadCoreData = async () => {
+    const [customersResult, sitesResult, profilesResult, inspectionsResult] = await Promise.all([
+      supabase.from("customers").select("id, customer_code, name, primary_mobile, email, billing_name, billing_address, gstin, notes, created_at").is("archived_at", null).order("created_at", { ascending: false }),
+      supabase.from("sites").select("id, site_code, customer_id, project_name, address, site_type, application_areas, lead_source, ultratech_sr_id, visit_date, supervisor_id, status, notes, created_at").is("archived_at", null).order("created_at", { ascending: false }),
+      supabase.from("profiles").select("id, email, full_name, phone, role, active, created_at, updated_at").order("created_at", { ascending: true }),
+      supabase.from("inspections").select("id, site_id, visit_number, inspected_at, inspector_id, building_type, application_areas, status, findings, remarks, created_at").order("inspected_at", { ascending: false }),
+    ]);
+    const coreError = customersResult.error || sitesResult.error;
+    if (coreError) {
+      setDataError(coreError.message);
+      return;
+    }
+    setLiveCustomers(customersResult.data || []);
+    setLiveSites(sitesResult.data || []);
+    if (!profilesResult.error) setLiveProfiles(profilesResult.data || []);
+    if (!inspectionsResult.error) setLiveInspections(inspectionsResult.data || []);
+    const optionalError = profilesResult.error || inspectionsResult.error;
+    setDataError(optionalError ? `Core records loaded, but some related data is unavailable: ${optionalError.message}` : "");
   };
 
   const navigate = (page: string) => {
@@ -769,14 +1324,102 @@ export default function App() {
     setSearch("");
     setProfileOpen(false);
     setDrawerOpen(false);
+    setEditingRecord(null);
+    setEditingInspectionId(null);
     setFunctionalScreen(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const openPrimaryAction = () => {
-    if (activeNav === "Inspections") setFunctionalScreen("inspection");
+    if (activeNav === "Inspections") {
+      setEditingInspectionId(null);
+      setFunctionalScreen("inspection");
+    }
     else if (activeNav === "Site Reports") setFunctionalScreen("report");
-    else setDrawerOpen(true);
+    else {
+      setEditingRecord(null);
+      setDrawerOpen(true);
+    }
+  };
+
+  const openModuleRow = async (row: string[]) => {
+    if (activeNav === "Inspections") {
+      const shortId = row[0].split("\n")[0].replace("INS-", "").toLowerCase();
+      const inspection = liveInspections?.find((item) => item.id.toLowerCase().startsWith(shortId));
+      if (!inspection) {
+        notify("Inspection record could not be loaded.");
+        return;
+      }
+      setEditingInspectionId(inspection.id);
+      setFunctionalScreen("inspection");
+      return;
+    }
+    if (!["Customers", "Sites"].includes(activeNav)) {
+      notify(`${row[0].split("\n")[0]} opened`);
+      return;
+    }
+    if (activeNav === "Customers") {
+      const customerCode = row[0].split("\n")[1];
+      const customer = liveCustomers?.find((item) => item.customer_code === customerCode);
+      if (!customer) {
+        notify("Customer record could not be loaded.");
+        return;
+      }
+      setEditingRecord({
+        module: "Customers",
+        id: customer.id,
+        values: {
+          "Customer name": customer.name || "",
+          "Primary mobile": customer.primary_mobile || "",
+          "Email address": customer.email || "",
+          "Billing name": customer.billing_name || "",
+          "Billing address": customer.billing_address || "",
+          GSTIN: customer.gstin || "",
+          Notes: customer.notes || "",
+        },
+      });
+    } else {
+      const siteCode = row[0].split("\n")[0];
+      const cachedSite = liveSites?.find((item) => item.site_code === siteCode);
+      const { data: fetchedSite, error: siteError } = await supabase
+        .from("sites")
+        .select("id, site_code, customer_id, project_name, ultratech_sr_id, address, site_type, application_areas, lead_source, supervisor_id, notes")
+        .eq("site_code", siteCode)
+        .single();
+      const site = fetchedSite || cachedSite;
+      if (!site) {
+        notify(siteError?.message || "Site record could not be loaded.");
+        return;
+      }
+      let customer = liveCustomers?.find((item) => item.id === site.customer_id);
+      if (!customer) {
+        const { data } = await supabase.from("customers").select("id, name").eq("id", site.customer_id).maybeSingle();
+        customer = data || undefined;
+      }
+      let supervisor = liveProfiles.find((profile) => profile.id === site.supervisor_id);
+      if (!supervisor && site.supervisor_id) {
+        const { data } = await supabase.from("profiles").select("id, full_name").eq("id", site.supervisor_id).maybeSingle();
+        supervisor = data || undefined;
+      }
+      const siteTypeLabels: Record<string, string> = { residential: "Residential", commercial: "Commercial", semi_residential: "Semi-Residential", other: "Other" };
+      const leadSourceLabels: Record<string, string> = { ultratech: "UltraTech", direct: "Direct", referral: "Referral", other: "Other" };
+      setEditingRecord({
+        module: "Sites",
+        id: site.id,
+        values: {
+          Customer: customer?.id || site.customer_id || "",
+          "Project / site name": site.project_name || "",
+          "UltraTech SR ID": site.ultratech_sr_id || "",
+          "Site address": site.address || "",
+          "Site type": siteTypeLabels[site.site_type] || displayStatus(site.site_type),
+          "Application areas": (site.application_areas || []).map(displayStatus).join(", "),
+          "Lead source": leadSourceLabels[site.lead_source] || displayStatus(site.lead_source),
+          "Assigned supervisor": supervisor?.full_name || "",
+          Remarks: site.notes || "",
+        },
+      });
+    }
+    setDrawerOpen(true);
   };
 
   useEffect(() => {
@@ -788,8 +1431,289 @@ export default function App() {
     return () => window.removeEventListener("hashchange", syncHash);
   }, []);
 
+  useEffect(() => {
+    const mapUser = (user: User): DemoUser => {
+      const email = user.email?.toLowerCase() || "";
+      const knownUser = demoUsers.find((candidate) => candidate.email === email);
+      if (knownUser) return knownUser;
+      const fullName = user.user_metadata?.full_name || email.split("@")[0] || "Staff User";
+      const metadataRole = user.user_metadata?.role;
+      return {
+        name: fullName,
+        email,
+        role: roleLabels[metadataRole] || "Site Supervisor",
+        initials: fullName.slice(0, 2).toUpperCase(),
+      };
+    };
+
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session?.user) {
+        setCurrentUser(mapUser(data.session.user));
+        setAuthScreen(null);
+      }
+      setAuthReady(true);
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        setCurrentUser(mapUser(session.user));
+        setAuthScreen(null);
+      } else {
+        setAuthScreen("login");
+      }
+      setAuthReady(true);
+    });
+
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (authReady && !authScreen) void loadCoreData();
+  }, [authReady, authScreen]);
+
+  const signIn = async (email: string, password: string) => {
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error?.message === "Invalid login credentials") {
+      return "This account does not exist in Supabase Auth or its password is different. Ask an administrator to create or reset the account.";
+    }
+    if (error) return error.message;
+    if (!data.user) return "Supabase did not return a signed-in user.";
+    return null;
+  };
+
+  const signOut = async () => {
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      notify(error.message);
+      return;
+    }
+    setProfileOpen(false);
+    setAuthScreen("login");
+  };
+
+  const toIsoDate = (value: string) => {
+    const trimmed = value.trim();
+    const match = trimmed.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    return match ? `${match[3]}-${match[2]}-${match[1]}` : trimmed;
+  };
+
+  const toNumber = (value: string) => Number.parseFloat(value.replace(/[₹,\s]/g, "")) || 0;
+  const toEnum = (value: string) => value.trim().toLowerCase().replaceAll("/", "_").replaceAll("-", "_").replaceAll(" ", "_");
+  const siteCodeFromLabel = (value: string) => value.split("·")[0].trim();
+
+  const currentAuthUserId = async () => {
+    const { data } = await supabase.auth.getUser();
+    if (!data.user) throw new Error("Your session has expired. Sign in again.");
+    return data.user.id;
+  };
+
+  const findSite = async (label: string) => {
+    const siteCode = siteCodeFromLabel(label);
+    const { data, error } = await supabase.from("sites").select("id, site_code, project_name").eq("site_code", siteCode).single();
+    if (error || !data) throw new Error(`Site ${siteCode} was not found in Supabase.`);
+    return data;
+  };
+
+  const uploadSiteFile = async (siteId: string, file: File, category: "quotation" | "progress_photo" | "site_document", stage?: string) => {
+    if (file.size > 10 * 1024 * 1024) throw new Error(`${file.name} is larger than 10 MB.`);
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "-");
+    const objectPath = `${siteId}/${category}/${crypto.randomUUID()}-${safeName}`;
+    const { error: uploadError } = await supabase.storage.from("site-files").upload(objectPath, file, { contentType: file.type, upsert: false });
+    if (uploadError) throw new Error(`File upload failed: ${uploadError.message}`);
+    const userId = await currentAuthUserId();
+    const { data, error } = await supabase.from("site_files").insert({
+      site_id: siteId,
+      category,
+      stage: stage || null,
+      caption: file.name,
+      bucket_id: "site-files",
+      object_path: objectPath,
+      mime_type: file.type,
+      size_bytes: file.size,
+      uploaded_by: userId,
+    }).select("id, object_path").single();
+    if (error || !data) {
+      await supabase.storage.from("site-files").remove([objectPath]);
+      throw new Error(`File record could not be saved: ${error?.message || "Unknown error"}`);
+    }
+    return data;
+  };
+
+  const saveForm = async (module: string, values: Record<string, string>, files: Record<string, File>, editId?: string) => {
+    try {
+      const userId = await currentAuthUserId();
+
+      if (module === "Customers") {
+        const customerData = {
+          name: values["Customer name"].trim(),
+          primary_mobile: values["Primary mobile"].trim(),
+          email: values["Email address"]?.trim() || null,
+          billing_name: values["Billing name"]?.trim() || null,
+          billing_address: values["Billing address"]?.trim() || null,
+          gstin: values.GSTIN?.trim() || null,
+          notes: values.Notes?.trim() || null,
+        };
+        const { error } = editId
+          ? await supabase.from("customers").update(customerData).eq("id", editId)
+          : await supabase.from("customers").insert({ ...customerData, created_by: userId });
+        if (error) throw error;
+      } else if (module === "Sites") {
+        const { data: customer, error: customerError } = await supabase.from("customers").select("id").eq("id", values.Customer).single();
+        if (customerError || !customer) throw new Error("The selected customer was not found in Supabase.");
+        let supervisorId: string | null = null;
+        if (values["Assigned supervisor"]) {
+          const { data: supervisor } = await supabase.from("profiles").select("id").eq("full_name", values["Assigned supervisor"]).limit(1).maybeSingle();
+          supervisorId = supervisor?.id || null;
+        }
+        const siteData = {
+          customer_id: customer.id,
+          project_name: values["Project / site name"].trim(),
+          ultratech_sr_id: values["UltraTech SR ID"]?.trim() || null,
+          address: values["Site address"].trim(),
+          site_type: toEnum(values["Site type"]),
+          application_areas: values["Application areas"]?.split(",").map((area) => toEnum(area)).filter(Boolean) || [],
+          lead_source: values["Lead source"] ? toEnum(values["Lead source"]) : "direct",
+          supervisor_id: supervisorId,
+          notes: values.Remarks?.trim() || null,
+        };
+        const query = editId
+          ? supabase.from("sites").update(siteData).eq("id", editId)
+          : supabase.from("sites").insert({ ...siteData, created_by: userId });
+        const { data, error } = await query.select("site_code").single();
+        if (error) throw error;
+        if (!data?.site_code) throw new Error("Supabase did not return the saved Site ID.");
+      } else if (module === "Quotations") {
+        const site = await findSite(values.Site);
+        const pdf = await uploadSiteFile(site.id, files["Quotation PDF"], "quotation");
+        const statusMap: Record<string, string> = { "Follow-up Pending": "follow_up_pending" };
+        const { error } = await supabase.from("quotations").insert({
+          site_id: site.id,
+          quotation_number: values["Quotation number"].trim(),
+          quotation_date: toIsoDate(values["Quotation date"]),
+          total_value: toNumber(values["Total amount"]),
+          status: statusMap[values.Status] || toEnum(values.Status || "draft"),
+          follow_up_date: values["Follow-up date"] ? toIsoDate(values["Follow-up date"]) : null,
+          follow_up_remarks: values["Follow-up remarks"]?.trim() || null,
+          source_app: "quotation_maker",
+          pdf_file_id: pdf.id,
+          created_by: userId,
+        });
+        if (error) throw error;
+      } else if (module === "Godown & Materials") {
+        const { data: product, error: productError } = await supabase.from("products").select("id").eq("name", values.Product).single();
+        if (productError || !product) throw new Error("The selected product was not found in Supabase.");
+        const transactionMap: Record<string, string> = { "Stock receipt": "receipt", "Site issue": "issue", "Site return": "return" };
+        const site = values.Site ? await findSite(values.Site) : null;
+        let attachmentPath: string | null = null;
+        if (files["Supporting document"]) {
+          if (!site) throw new Error("Select a site before uploading a transaction document.");
+          attachmentPath = (await uploadSiteFile(site.id, files["Supporting document"], "site_document")).object_path;
+        }
+        const { error } = await supabase.from("stock_transactions").insert({
+          transaction_type: transactionMap[values["Transaction type"]],
+          transaction_at: new Date(toIsoDate(values["Transaction date"])).toISOString(),
+          product_id: product.id,
+          site_id: site?.id || null,
+          quantity: toNumber(values.Quantity),
+          supplier_or_reference: values["Reference / remarks"]?.trim() || null,
+          attachment_path: attachmentPath,
+          created_by: userId,
+        });
+        if (error) throw error;
+      } else if (module === "Labour & Attendance") {
+        const site = await findSite(values.Site);
+        const { data: labourer, error: labourerError } = await supabase.from("labourers").select("id, daily_wage").eq("name", values.Labourer).single();
+        if (labourerError || !labourer) throw new Error("The selected labourer was not found in Supabase.");
+        const { error } = await supabase.from("attendance_entries").insert({
+          attendance_date: toIsoDate(values["Attendance date"]),
+          labourer_id: labourer.id,
+          site_id: site.id,
+          work_performed: values["Work and remarks"].trim(),
+          check_in: values["Check-in"] || null,
+          check_out: values["Check-out"] || null,
+          day_fraction: toNumber(values["Day fraction"]),
+          daily_wage_snapshot: labourer.daily_wage,
+          overtime_duration_hours: toNumber(values["Overtime duration"] || "0"),
+          overtime_amount: 0,
+          status: "submitted",
+          entered_by: userId,
+        });
+        if (error) throw error;
+      } else if (module === "Work Progress") {
+        const site = await findSite(values.Site);
+        const { error } = await supabase.from("progress_updates").insert({
+          site_id: site.id,
+          progress_date: toIsoDate(values["Progress date"]),
+          supervisor_id: userId,
+          work_completed: values["Work completed"].trim(),
+          pending_work: values["Pending work"]?.trim() || null,
+          issues: values["Issues and next action"]?.trim() || null,
+          next_action: values["Issues and next action"]?.trim() || null,
+          created_by: userId,
+        });
+        if (error) throw error;
+        if (files["Site photos"]) await uploadSiteFile(site.id, files["Site photos"], "progress_photo", values["Photo stage"]);
+      } else if (module === "Labour Expense Claims") {
+        const site = await findSite(values.Site);
+        const { data: labourer, error: labourerError } = await supabase.from("labourers").select("id").eq("name", values.Labourer).single();
+        if (labourerError || !labourer) throw new Error("The selected labourer was not found in Supabase.");
+        const receipt = files["Receipt / invoice"] ? await uploadSiteFile(site.id, files["Receipt / invoice"], "site_document") : null;
+        const claimNumber = `EXP-${new Date().getFullYear()}-${Date.now().toString().slice(-6)}`;
+        const { error } = await supabase.from("expense_claims").insert({
+          claim_number: claimNumber,
+          labourer_id: labourer.id,
+          site_id: site.id,
+          category: toEnum(values["Expense category"]),
+          amount: toNumber(values.Amount),
+          expense_date: toIsoDate(values["Expense date"]),
+          description: values.Description.trim(),
+          payment_method: values["Payment method"] ? toEnum(values["Payment method"]) : null,
+          receipt_path: receipt?.object_path || null,
+          no_receipt_reason: receipt ? null : "Receipt was not attached during submission.",
+          status: "submitted",
+          submitted_by: userId,
+        });
+        if (error) throw error;
+      } else if (module === "Invoices & Payments") {
+        const site = await findSite(values.Site);
+        const document = files["Invoice document"] ? await uploadSiteFile(site.id, files["Invoice document"], "site_document") : null;
+        const { error } = await supabase.from("invoices").insert({
+          site_id: site.id,
+          invoice_number: values["Invoice number"].trim(),
+          invoice_date: toIsoDate(values["Invoice date"]),
+          amount: toNumber(values.Amount),
+          due_date: toIsoDate(values["Due date"]),
+          status: "unpaid",
+          attachment_path: document?.object_path || null,
+          notes: values.Notes?.trim() || null,
+          created_by: userId,
+        });
+        if (error) throw error;
+      } else if (module === "Users & Settings") {
+        throw new Error("Create staff accounts in Supabase Auth first. Browser clients cannot securely create privileged users.");
+      } else {
+        throw new Error(`Saving ${module} is not available until its database table is enabled.`);
+      }
+
+      setDrawerOpen(false);
+      setEditingRecord(null);
+      await loadCoreData();
+      notify(editId ? `${module === "Sites" ? "Site" : "Customer"} updated in Supabase` : "Record saved to Supabase");
+      return null;
+    } catch (error) {
+      const message = errorMessage(error);
+      if (message.includes("Could not find the table")) return "Required database tables are missing. Apply the Supabase migrations first.";
+      if (message.includes("row-level security")) return "Supabase denied this action. Check the user profile role and RLS policies.";
+      return message;
+    }
+  };
+
+  if (!authReady) {
+    return <div className="auth-loading"><span className="brand-mark"><Icon name="shield" size={22} /></span><strong>Connecting securely…</strong></div>;
+  }
+
   if (authScreen) {
-    return <AuthScreen screen={authScreen} setScreen={setAuthScreen} onLogin={(user) => { setCurrentUser(user); setAuthScreen(null); notify(`Signed in as ${user.role}`); }} />;
+    return <AuthScreen screen={authScreen} setScreen={setAuthScreen} onLogin={signIn} />;
   }
 
   return (
@@ -830,12 +1754,14 @@ export default function App() {
                 <span><strong>{currentUser.name}</strong><small>{currentUser.role}</small></span>
                 <Icon name="chevron" size={15} />
               </button>
-              {profileOpen && <div className="profile-menu"><button onClick={() => navigate("Users & Settings")}>My profile</button><button onClick={() => navigate("Users & Settings")}>Account settings</button><button onClick={() => setAuthScreen("login")}>Sign out</button></div>}
+              {profileOpen && <div className="profile-menu"><button onClick={() => navigate("Users & Settings")}>My profile</button><button onClick={() => navigate("Users & Settings")}>Account settings</button><button onClick={signOut}>Sign out</button></div>}
             </div>
           </div>
         </header>
 
-        {functionalScreen === "inspection" ? <InspectionCalculator onBack={() => setFunctionalScreen(null)} notify={notify} />
+        {dataError && <div className="data-error-banner"><Icon name="alert" size={16} /><span><strong>Supabase data could not be loaded.</strong>{dataError}</span><button onClick={() => loadCoreData()}>Retry</button></div>}
+
+        {functionalScreen === "inspection" ? <InspectionCalculator existingInspectionId={editingInspectionId} onBack={() => { setFunctionalScreen(null); setEditingInspectionId(null); }} notify={notify} onSaved={loadCoreData} />
           : functionalScreen === "report" ? <SiteReportBuilder onBack={() => setFunctionalScreen(null)} notify={notify} />
           : activeNav === "Overview" ? <div className="content">
           <section className="page-heading">
@@ -859,7 +1785,7 @@ export default function App() {
           </section>
 
           <section className="metrics">
-            <MetricCard label="ACTIVE SITES" value="24" meta=" current work sites" icon="building" tone="green" onClick={() => navigate("Sites")} />
+            <MetricCard label="ACTIVE SITES" value={liveSites === null ? "24" : String(liveSites.filter((site) => !["completed", "cancelled"].includes(site.status)).length)} meta=" current work sites" icon="building" tone="green" onClick={() => navigate("Sites")} />
             <MetricCard label="VISITS DUE" value="7" meta=" 3 scheduled today" icon="calendar" tone="amber" onClick={() => navigate("Inspections")} />
             <MetricCard label="FOLLOW-UPS" value="5" meta=" 2 overdue" icon="clock" tone="blue" onClick={() => navigate("Quotations")} />
             <MetricCard label="OUTSTANDING" value="₹4.82L" meta=" across 8 invoices" icon="wallet" tone="red" onClick={() => navigate("Invoices & Payments")} />
@@ -884,7 +1810,7 @@ export default function App() {
                 <button className="text-link" onClick={() => navigate("Sites")}>View all sites <Icon name="arrow" size={15} /></button>
               </div>
               <div className="tabs" role="tablist">
-                {["All", "Ongoing", "Visit Scheduled", "Quotation Sent", "Completed"].map((tab) => <button role="tab" aria-selected={projectFilter === tab} className={projectFilter === tab ? "active" : ""} key={tab} onClick={() => setProjectFilter(tab)}>{tab}{tab === "All" && <span>42</span>}</button>)}
+                {["All", "Ongoing", "Visit Scheduled", "Quotation Sent", "Completed"].map((tab) => <button role="tab" aria-selected={projectFilter === tab} className={projectFilter === tab ? "active" : ""} key={tab} onClick={() => setProjectFilter(tab)}>{tab}{tab === "All" && <span>{dashboardProjects.length}</span>}</button>)}
               </div>
               <div className="table-wrap">
                 <table>
@@ -902,7 +1828,7 @@ export default function App() {
                     ))}
                   </tbody>
                 </table>
-                {visibleProjects.length === 0 && <div className="empty"><Icon name="search" size={22} /><strong>No matching sites</strong><span>Try a different status or search term.</span></div>}
+                {visibleProjects.length === 0 && <div className="empty"><Icon name={dashboardProjects.length ? "search" : "building"} size={22} /><strong>{dashboardProjects.length ? "No matching sites" : "No sites yet"}</strong><span>{dashboardProjects.length ? "Try a different status or search term." : "Create a customer, then add the first linked site."}</span></div>}
               </div>
             </section>
 
@@ -925,9 +1851,17 @@ export default function App() {
               </section>
             </aside>
           </div>
-        </div> : <ModulePage key={activeNav} config={moduleConfigs[activeNav]} search={search} notify={notify} onPrimary={openPrimaryAction} />}
+        </div> : activeNav === "Users & Settings"
+          ? <UsersSettingsPage profiles={liveProfiles} notify={notify} refresh={loadCoreData} navigate={navigate} onInvite={() => { setEditingRecord(null); setDrawerOpen(true); }} />
+          : <ModulePage key={activeNav} config={liveModuleConfigs[activeNav]} search={search} notify={notify} onPrimary={openPrimaryAction} onRowOpen={["Customers", "Sites", "Inspections"].includes(activeNav) ? openModuleRow : undefined} />}
       </main>
-      {drawerOpen && <FormDrawer module={activeNav} onClose={() => setDrawerOpen(false)} onSave={() => { setDrawerOpen(false); notify("Record saved successfully"); }} />}
+      {drawerOpen && <FormDrawer
+        module={activeNav}
+        initialValues={editingRecord?.values}
+        editing={Boolean(editingRecord)}
+        onClose={() => { setDrawerOpen(false); setEditingRecord(null); }}
+        onSave={(values, files) => saveForm(activeNav, values, files, editingRecord?.id)}
+      />}
       {toast && <div className="toast"><span><Icon name="check" size={15} /></span>{toast}<button aria-label="Dismiss notification" onClick={() => setToast("")}><Icon name="close" size={14} /></button></div>}
     </div>
   );
