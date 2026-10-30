@@ -432,6 +432,66 @@ function ModulePage({ config, search, notify, onPrimary, onRowOpen }: { config: 
   );
 }
 
+const applicationAreaOptions = [
+  "Toilet / Bathroom",
+  "Utility",
+  "Sunken Slab",
+  "Kitchen",
+  "Balcony",
+  "Terrace / Roof",
+  "Water Tank",
+  "Swimming Pool",
+  "Podium",
+  "Planter Box",
+  "Basement",
+  "Lift Pit",
+  "Retaining Wall",
+  "External Wall",
+  "Internal Wall",
+  "Expansion Joint",
+  "Construction Joint",
+  "Floor",
+  "Roof Garden",
+  "Sump",
+  "Wet Area",
+  "Facade",
+  "Parking Area",
+  "Other",
+];
+
+const leadSourceOptions = [
+  "UltraTech Engineer",
+  "Direct Customer",
+  "Customer Reference",
+  "Existing Customer",
+  "My Team",
+  "Website",
+  "Google Search",
+  "Social Media",
+  "Justdial",
+  "IndiaMART",
+];
+
+const leadSourceCodes: Record<string, string> = {
+  "UltraTech Engineer": "ultratech_engineer",
+  "Direct Customer": "direct_customer",
+  "Customer Reference": "customer_reference",
+  "Existing Customer": "existing_customer",
+  "My Team": "my_team",
+  Website: "website",
+  "Google Search": "google_search",
+  "Social Media": "social_media",
+  Justdial: "justdial",
+  IndiaMART: "indiamart",
+};
+
+const applicationAreaCodes: Record<string, string> = Object.fromEntries(
+  applicationAreaOptions.map((area) => [area, area.toLowerCase().replaceAll(" / ", "_").replaceAll(" ", "_")])
+);
+const applicationAreaLabels: Record<string, string> = Object.fromEntries(
+  Object.entries(applicationAreaCodes).map(([label, code]) => [code, label])
+);
+
 const formFields: Record<string, { label: string; placeholder: string; type?: "select" | "textarea" | "file"; options?: string[]; required?: boolean }[]> = {
   Customers: [
     { label: "Customer name", placeholder: "Enter full name or company", required: true },
@@ -448,8 +508,9 @@ const formFields: Record<string, { label: string; placeholder: string; type?: "s
     { label: "UltraTech SR ID", placeholder: "Optional — enter only when supplied" },
     { label: "Site address", placeholder: "Full site address", type: "textarea", required: true },
     { label: "Site type", placeholder: "Select type", type: "select", options: ["Residential", "Commercial", "Semi-Residential", "Other"], required: true },
-    { label: "Application areas", placeholder: "Terrace, Toilet, Balcony…" },
-    { label: "Lead source", placeholder: "Select source", type: "select", options: ["UltraTech", "Direct", "Referral", "Other"] },
+    { label: "Application areas", placeholder: "Select all applicable areas" },
+    { label: "Lead source", placeholder: "Select source", type: "select", options: leadSourceOptions },
+    { label: "Referral person", placeholder: "Select referral person", type: "select" },
     { label: "Assigned supervisor", placeholder: "Select supervisor", type: "select", options: ["Mahesha", "Govinda", "Pavan", "Shivaraj"] },
     { label: "Remarks", placeholder: "Site notes", type: "textarea" },
   ],
@@ -535,8 +596,11 @@ function FormDrawer({ module, onClose, onSave, initialValues, editing }: { modul
   const [saveError, setSaveError] = useState("");
   const [dynamicOptions, setDynamicOptions] = useState<Record<string, string[]>>({});
   const [customerChoices, setCustomerChoices] = useState<{ id: string; name: string; phone: string; address: string }[]>([]);
+  const [engineerChoices, setEngineerChoices] = useState<{ id: string; name: string; phone: string }[]>([]);
+  const [teamChoices, setTeamChoices] = useState<{ id: string; name: string; phone: string }[]>([]);
   const [customerSearch, setCustomerSearch] = useState("");
   const [customerPickerOpen, setCustomerPickerOpen] = useState(false);
+  const [areaPickerOpen, setAreaPickerOpen] = useState(false);
   const [sameAsCustomerAddress, setSameAsCustomerAddress] = useState(false);
 
   useEffect(() => {
@@ -544,9 +608,11 @@ function FormDrawer({ module, onClose, onSave, initialValues, editing }: { modul
     const loadOptions = async () => {
       const next: Record<string, string[]> = {};
       if (module === "Sites") {
-        const [{ data: customers }, { data: supervisors }] = await Promise.all([
+        const [{ data: customers }, { data: supervisors }, { data: engineers }, { data: teamMembers }] = await Promise.all([
           supabase.from("customers").select("id, name, primary_mobile, billing_address").is("archived_at", null).order("name"),
           supabase.from("profiles").select("full_name").eq("active", true).eq("role", "site_supervisor").order("full_name"),
+          supabase.from("ultratech_engineers").select("id, name, phone").eq("active", true).order("name"),
+          supabase.from("team_members").select("id, name, phone").eq("active", true).order("name"),
         ]);
         if (customers?.length) {
           setCustomerChoices(customers.map((customer) => ({ id: customer.id, name: customer.name, phone: customer.primary_mobile, address: customer.billing_address || "" })));
@@ -557,6 +623,8 @@ function FormDrawer({ module, onClose, onSave, initialValues, editing }: { modul
           }
         }
         if (supervisors?.length) next["Assigned supervisor"] = supervisors.map((profile) => profile.full_name);
+        setEngineerChoices((engineers || []).map((engineer) => ({ id: engineer.id, name: engineer.name, phone: engineer.phone || "" })));
+        setTeamChoices((teamMembers || []).map((member) => ({ id: member.id, name: member.name, phone: member.phone || "" })));
       }
       if (["Quotations", "Godown & Materials", "Labour & Attendance", "Work Progress", "Labour Expense Claims", "Invoices & Payments"].includes(module)) {
         const { data: sites } = await supabase.from("sites").select("site_code, project_name").is("archived_at", null).order("site_code", { ascending: false });
@@ -576,11 +644,23 @@ function FormDrawer({ module, onClose, onSave, initialValues, editing }: { modul
     return () => { active = false; };
   }, [module, initialValues?.Customer]);
 
+  const selectedAreas = (values["Application areas"] || "").split(",").map((area) => area.trim()).filter(Boolean);
+  const referralChoices = values["Lead source"] === "UltraTech Engineer"
+    ? engineerChoices
+    : values["Lead source"] === "My Team"
+      ? teamChoices
+      : customerChoices;
+  const referralSource = ["UltraTech Engineer", "My Team", "Customer Reference", "Existing Customer"].includes(values["Lead source"]);
+
   const submit = async () => {
     const missing = fields.find((field) => field.required && field.type !== "file" && !values[field.label]?.trim());
     const missingFile = fields.find((field) => field.required && field.type === "file" && !files[field.label]);
     if (missing || missingFile) {
       setSaveError(`${(missing || missingFile)?.label} is required.`);
+      return;
+    }
+    if (module === "Sites" && referralSource && !values["Referral person"]) {
+      setSaveError("Referral person is required for this lead source.");
       return;
     }
     setSaving(true);
@@ -601,7 +681,19 @@ function FormDrawer({ module, onClose, onSave, initialValues, editing }: { modul
         {module === "Sites" && <div className="form-notice"><Icon name="shield" size={17} /><span><strong>Internal Site ID is automatic</strong><small>The next ID will be generated after saving. UltraTech SR ID remains optional.</small></span></div>}
         {module === "Godown & Materials" && <div className="form-notice"><Icon name="box" size={17} /><span><strong>Confirmed transactions update stock</strong><small>Site issues that would create negative stock are blocked automatically.</small></span></div>}
         <div className="drawer-form">
-          {fields.map((field) => field.label === "Site address" && module === "Sites" ? (
+          {fields.map((field) => field.label === "Referral person" && module === "Sites" && !referralSource ? null : field.label === "Application areas" && module === "Sites" ? (
+            <div className="multi-select-field span-two" key={field.label}>
+              <span>{field.label}</span>
+              <button type="button" className={`multi-select-trigger ${areaPickerOpen ? "open" : ""}`} onClick={() => setAreaPickerOpen((open) => !open)}>
+                <span>{selectedAreas.length ? `${selectedAreas.length} area${selectedAreas.length === 1 ? "" : "s"} selected` : field.placeholder}</span>
+                <Icon name="chevron" size={14} />
+              </button>
+              {selectedAreas.length > 0 && <div className="selection-chips">{selectedAreas.map((area) => <button type="button" key={area} onClick={() => setValues((current) => ({ ...current, "Application areas": selectedAreas.filter((item) => item !== area).join(", ") }))}>{area}<Icon name="close" size={10} /></button>)}</div>}
+              {areaPickerOpen && <div className="multi-select-menu">
+                {applicationAreaOptions.map((area) => <label key={area}><input type="checkbox" checked={selectedAreas.includes(area)} onChange={() => { const nextAreas = selectedAreas.includes(area) ? selectedAreas.filter((item) => item !== area) : [...selectedAreas, area]; setValues((current) => ({ ...current, "Application areas": nextAreas.join(", ") })); }} /><span>{area}</span></label>)}
+              </div>}
+            </div>
+          ) : field.label === "Site address" && module === "Sites" ? (
             <div className="site-address-field span-two" key={field.label}>
               <div className="field-label-row"><span>{field.label}{field.required && <b> *</b>}</span><label><input type="checkbox" checked={sameAsCustomerAddress} disabled={!customerChoices.find((choice) => choice.id === values.Customer)?.address} onChange={(event) => { const checked = event.target.checked; setSameAsCustomerAddress(checked); if (checked) { const customer = customerChoices.find((choice) => choice.id === values.Customer); if (customer?.address) setValues((current) => ({ ...current, "Site address": customer.address })); } }} /><span>Same as customer address</span></label></div>
               <textarea rows={3} placeholder={field.placeholder} value={values[field.label] || ""} readOnly={sameAsCustomerAddress} onChange={(event) => setValues((current) => ({ ...current, [field.label]: event.target.value }))} />
@@ -617,7 +709,8 @@ function FormDrawer({ module, onClose, onSave, initialValues, editing }: { modul
                   {!customerChoices.filter((customer) => `${customer.name} ${customer.phone}`.toLowerCase().includes(customerSearch.toLowerCase())).length && <div className="customer-picker-empty">No customer matches this name or phone number.</div>}
                 </div>}
               </div>
-                : field.type === "select" ? <select value={values[field.label] || ""} onChange={(event) => setValues((current) => ({ ...current, [field.label]: event.target.value }))}><option value="" disabled>{field.placeholder}</option>{(dynamicOptions[field.label] || field.options)?.map((option) => <option key={option}>{option}</option>)}</select>
+                : module === "Sites" && field.label === "Referral person" ? <select value={values[field.label] || ""} onChange={(event) => setValues((current) => ({ ...current, [field.label]: event.target.value }))}><option value="">{referralChoices.length ? field.placeholder : "No active names in this list"}</option>{referralChoices.map((choice) => <option value={choice.id} key={choice.id}>{choice.name}{choice.phone ? ` · ${choice.phone}` : ""}</option>)}</select>
+                : field.type === "select" ? <select value={values[field.label] || ""} onChange={(event) => setValues((current) => ({ ...current, [field.label]: event.target.value, ...(module === "Sites" && field.label === "Lead source" ? { "Referral person": "" } : {}) }))}><option value="" disabled>{field.placeholder}</option>{(dynamicOptions[field.label] || field.options)?.map((option) => <option key={option}>{option}</option>)}</select>
                 : field.type === "textarea" ? <textarea rows={3} placeholder={field.placeholder} value={values[field.label] || ""} onChange={(event) => setValues((current) => ({ ...current, [field.label]: event.target.value }))} />
                 : field.type === "file" ? <span className="file-drop"><input type="file" accept=".pdf,image/jpeg,image/png,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (file) setFiles((current) => ({ ...current, [field.label]: file })); }} /><Icon name="document" size={18} /><span><strong>{files[field.label]?.name || field.placeholder}</strong><small>PDF, JPG, PNG or WebP · max 10 MB</small></span></span>
                 : <input placeholder={field.placeholder} value={values[field.label] || ""} onChange={(event) => setValues((current) => ({ ...current, [field.label]: event.target.value }))} />}
@@ -1051,6 +1144,11 @@ function UsersSettingsPage({ profiles, notify, refresh, navigate, onInvite }: { 
   const [auditEntity, setAuditEntity] = useState("All records");
   const [pendingItems, setPendingItems] = useState<{ id: string; title: string; detail: string; module: string; tone: string }[]>([]);
   const [alertSettings, setAlertSettings] = useState({ visits: true, quotations: true, lowStock: true, overdue: false });
+  const [engineers, setEngineers] = useState<any[]>([]);
+  const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  const [newEngineer, setNewEngineer] = useState({ name: "", phone: "" });
+  const [newTeamMember, setNewTeamMember] = useState({ name: "", phone: "" });
+  const [savingMaster, setSavingMaster] = useState(false);
 
   const loadAudit = async () => {
     const { data, error } = await supabase.from("audit_events").select("id, actor_id, action, entity_type, entity_id, site_id, before_data, after_data, created_at").order("created_at", { ascending: false }).limit(100);
@@ -1077,9 +1175,44 @@ function UsersSettingsPage({ profiles, notify, refresh, navigate, onInvite }: { 
     setPendingItems(items);
   };
 
+  const loadReferralMasters = async () => {
+    const [engineerResult, teamResult] = await Promise.all([
+      supabase.from("ultratech_engineers").select("id, name, phone, active").order("name"),
+      supabase.from("team_members").select("id, name, phone, active").order("name"),
+    ]);
+    const error = engineerResult.error || teamResult.error;
+    if (error) {
+      notify(error.message);
+      return;
+    }
+    setEngineers(engineerResult.data || []);
+    setTeamMembers(teamResult.data || []);
+  };
+
+  const saveMasterItem = async (table: "ultratech_engineers" | "team_members", item: any) => {
+    if (!item.name?.trim()) {
+      notify("Name is required");
+      return;
+    }
+    setSavingMaster(true);
+    const { error } = item.id
+      ? await supabase.from(table).update({ name: item.name.trim(), phone: item.phone?.trim() || null, active: item.active }).eq("id", item.id)
+      : await supabase.from(table).insert({ name: item.name.trim(), phone: item.phone?.trim() || null });
+    setSavingMaster(false);
+    if (error) {
+      notify(error.message);
+      return;
+    }
+    if (table === "ultratech_engineers") setNewEngineer({ name: "", phone: "" });
+    else setNewTeamMember({ name: "", phone: "" });
+    await loadReferralMasters();
+    notify(item.id ? "Referral name updated" : "Referral name added");
+  };
+
   useEffect(() => {
     if (activeTab === "Audit Log") void loadAudit();
     if (activeTab === "Pending Items") void loadPending();
+    if (activeTab === "Referral Masters") void loadReferralMasters();
   }, [activeTab]);
 
   const saveUser = async () => {
@@ -1127,7 +1260,7 @@ function UsersSettingsPage({ profiles, notify, refresh, navigate, onInvite }: { 
 
       <section className="panel settings-panel">
         <div className="settings-tabs">
-          {["Users", "Role Presets", "Alerts", "Business Profile", "Audit Log"].map((tab) => <button className={activeTab === tab ? "active" : ""} onClick={() => setActiveTab(tab)} key={tab}>{tab}</button>)}
+          {["Users", "Role Presets", "Referral Masters", "Alerts", "Business Profile"].map((tab) => <button className={activeTab === tab ? "active" : ""} onClick={() => setActiveTab(tab)} key={tab}>{tab}</button>)}
           <span />
           <button className={activeTab === "Pending Items" ? "active" : ""} onClick={() => setActiveTab("Pending Items")}><Icon name="alert" size={14} />Pending items</button>
           <button className={activeTab === "Audit Log" ? "active" : ""} onClick={() => setActiveTab("Audit Log")}><Icon name="clock" size={14} />Activity history</button>
@@ -1152,6 +1285,23 @@ function UsersSettingsPage({ profiles, notify, refresh, navigate, onInvite }: { 
               ["UltraTech Technical Executive", "Technical review", ["UltraTech sourced sites", "Inspection findings", "Measurements", "Progress review"]],
               ["Labour / Field Worker", "Limited field access", ["Assigned work", "Own attendance", "Progress notes", "Expense claims"]],
             ].map(([name, scope, permissions]: any) => <article className="role-card" key={name}><span><Icon name="shield" size={18} /></span><h3>{name}</h3><p>{scope}</p><ul>{permissions.map((permission: string) => <li key={permission}><Icon name="check" size={11} />{permission}</li>)}</ul></article>)}
+          </div>
+        </div>}
+
+        {activeTab === "Referral Masters" && <div className="settings-view">
+          <div className="view-heading"><div><h2>Referral person masters</h2><p>Maintain the names available when a site is sourced by an UltraTech Engineer or My Team.</p></div></div>
+          <div className="master-grid">
+            {[
+              { title: "UltraTech Engineers", table: "ultratech_engineers" as const, items: engineers, setItems: setEngineers, draft: newEngineer, setDraft: setNewEngineer },
+              { title: "My Team", table: "team_members" as const, items: teamMembers, setItems: setTeamMembers, draft: newTeamMember, setDraft: setNewTeamMember },
+            ].map((master) => <section className="master-card" key={master.table}>
+              <header><div><h3>{master.title}</h3><span>{master.items.filter((item: any) => item.active).length} active</span></div></header>
+              <div className="master-add"><input aria-label={`New ${master.title} name`} placeholder="Full name" value={master.draft.name} onChange={(event) => master.setDraft({ ...master.draft, name: event.target.value })} /><input aria-label={`New ${master.title} phone`} placeholder="Phone (optional)" value={master.draft.phone} onChange={(event) => master.setDraft({ ...master.draft, phone: event.target.value })} /><button onClick={() => saveMasterItem(master.table, master.draft)} disabled={savingMaster}><Icon name="plus" size={14} />Add</button></div>
+              <div className="master-list">
+                {master.items.map((item: any, index: number) => <div key={item.id}><input aria-label="Name" value={item.name} onChange={(event) => master.setItems(master.items.map((candidate: any, itemIndex: number) => itemIndex === index ? { ...candidate, name: event.target.value } : candidate))} /><input aria-label="Phone" placeholder="Phone" value={item.phone || ""} onChange={(event) => master.setItems(master.items.map((candidate: any, itemIndex: number) => itemIndex === index ? { ...candidate, phone: event.target.value } : candidate))} /><label title="Available in Site forms"><input type="checkbox" checked={item.active} onChange={(event) => master.setItems(master.items.map((candidate: any, itemIndex: number) => itemIndex === index ? { ...candidate, active: event.target.checked } : candidate))} /><span>Active</span></label><button onClick={() => saveMasterItem(master.table, item)} disabled={savingMaster}>Save</button></div>)}
+                {!master.items.length && <div className="master-empty">No names added yet.</div>}
+              </div>
+            </section>)}
           </div>
         </div>}
 
@@ -1301,7 +1451,7 @@ export default function App() {
   const loadCoreData = async () => {
     const [customersResult, sitesResult, profilesResult, inspectionsResult] = await Promise.all([
       supabase.from("customers").select("id, customer_code, name, primary_mobile, email, billing_name, billing_address, gstin, notes, created_at").is("archived_at", null).order("created_at", { ascending: false }),
-      supabase.from("sites").select("id, site_code, customer_id, project_name, address, site_type, application_areas, lead_source, ultratech_sr_id, visit_date, supervisor_id, status, notes, created_at").is("archived_at", null).order("created_at", { ascending: false }),
+      supabase.from("sites").select("id, site_code, customer_id, project_name, address, site_type, application_areas, lead_source, ultratech_sr_id, ultratech_engineer_id, team_member_id, referral_customer_id, visit_date, supervisor_id, status, notes, created_at").is("archived_at", null).order("created_at", { ascending: false }),
       supabase.from("profiles").select("id, email, full_name, phone, role, active, created_at, updated_at").order("created_at", { ascending: true }),
       supabase.from("inspections").select("id, site_id, visit_number, inspected_at, inspector_id, building_type, application_areas, status, findings, remarks, created_at").order("inspected_at", { ascending: false }),
     ]);
@@ -1383,7 +1533,7 @@ export default function App() {
       const cachedSite = liveSites?.find((item) => item.site_code === siteCode);
       const { data: fetchedSite, error: siteError } = await supabase
         .from("sites")
-        .select("id, site_code, customer_id, project_name, ultratech_sr_id, address, site_type, application_areas, lead_source, supervisor_id, notes")
+        .select("id, site_code, customer_id, project_name, ultratech_sr_id, address, site_type, application_areas, lead_source, ultratech_engineer_id, team_member_id, referral_customer_id, supervisor_id, notes")
         .eq("site_code", siteCode)
         .single();
       const site = fetchedSite || cachedSite;
@@ -1402,7 +1552,7 @@ export default function App() {
         supervisor = data || undefined;
       }
       const siteTypeLabels: Record<string, string> = { residential: "Residential", commercial: "Commercial", semi_residential: "Semi-Residential", other: "Other" };
-      const leadSourceLabels: Record<string, string> = { ultratech: "UltraTech", direct: "Direct", referral: "Referral", other: "Other" };
+      const leadSourceLabels: Record<string, string> = Object.fromEntries(Object.entries(leadSourceCodes).map(([label, code]) => [code, label]));
       setEditingRecord({
         module: "Sites",
         id: site.id,
@@ -1412,8 +1562,9 @@ export default function App() {
           "UltraTech SR ID": site.ultratech_sr_id || "",
           "Site address": site.address || "",
           "Site type": siteTypeLabels[site.site_type] || displayStatus(site.site_type),
-          "Application areas": (site.application_areas || []).map(displayStatus).join(", "),
+          "Application areas": (site.application_areas || []).map((area: string) => applicationAreaLabels[area] || displayStatus(area)).join(", "),
           "Lead source": leadSourceLabels[site.lead_source] || displayStatus(site.lead_source),
+          "Referral person": site.ultratech_engineer_id || site.team_member_id || site.referral_customer_id || "",
           "Assigned supervisor": supervisor?.full_name || "",
           Remarks: site.notes || "",
         },
@@ -1565,14 +1716,19 @@ export default function App() {
           const { data: supervisor } = await supabase.from("profiles").select("id").eq("full_name", values["Assigned supervisor"]).limit(1).maybeSingle();
           supervisorId = supervisor?.id || null;
         }
+        const leadSource = leadSourceCodes[values["Lead source"]] || "direct_customer";
+        const referralId = values["Referral person"] || null;
         const siteData = {
           customer_id: customer.id,
           project_name: values["Project / site name"].trim(),
           ultratech_sr_id: values["UltraTech SR ID"]?.trim() || null,
           address: values["Site address"].trim(),
           site_type: toEnum(values["Site type"]),
-          application_areas: values["Application areas"]?.split(",").map((area) => toEnum(area)).filter(Boolean) || [],
-          lead_source: values["Lead source"] ? toEnum(values["Lead source"]) : "direct",
+          application_areas: values["Application areas"]?.split(",").map((area) => applicationAreaCodes[area.trim()] || toEnum(area)).filter(Boolean) || [],
+          lead_source: leadSource,
+          ultratech_engineer_id: leadSource === "ultratech_engineer" ? referralId : null,
+          team_member_id: leadSource === "my_team" ? referralId : null,
+          referral_customer_id: ["customer_reference", "existing_customer"].includes(leadSource) ? referralId : null,
           supervisor_id: supervisorId,
           notes: values.Remarks?.trim() || null,
         };

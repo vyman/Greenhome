@@ -373,6 +373,21 @@ tbody tr:hover { background: #fbfcfb; }
 .audit-detail { gap: 18px; }
 .audit-detail > div { display: grid; gap: 7px; }
 .audit-detail pre { max-height: 230px; margin: 0; padding: 11px; overflow: auto; color: var(--ink-600); background: var(--canvas); border: 1px solid var(--line); border-radius: 7px; font-size: 9px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.master-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.master-card { overflow: hidden; border: 1px solid var(--line); border-radius: 10px; }
+.master-card > header { min-height: 58px; padding: 0 14px; display: flex; align-items: center; background: var(--canvas); border-bottom: 1px solid var(--line); }
+.master-card > header h3 { margin: 0; font: 700 12px "Manrope"; }
+.master-card > header span { margin-top: 3px; display: block; color: var(--green-700); font-size: 8px; }
+.master-add { padding: 11px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .8fr) auto; gap: 6px; border-bottom: 1px solid var(--line-soft); }
+.master-add input, .master-list input { width: 100%; min-width: 0; height: 34px; padding: 0 9px; color: var(--ink-800); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; outline: 0; font-size: 9px; }
+.master-add button, .master-list > div > button { min-height: 34px; padding: 0 10px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; color: #fff; background: var(--green-700); border: 0; border-radius: 6px; font-size: 9px; font-weight: 700; cursor: pointer; }
+.master-add button:disabled, .master-list button:disabled { opacity: .5; cursor: wait; }
+.master-list { max-height: 300px; overflow-y: auto; }
+.master-list > div { min-height: 52px; padding: 8px 11px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .75fr) auto auto; align-items: center; gap: 6px; border-bottom: 1px solid var(--line-soft); }
+.master-list > div:last-child { border-bottom: 0; }
+.master-list label { display: inline-flex; align-items: center; gap: 4px; color: var(--ink-500); font-size: 8px; }
+.master-list label input { width: 13px; height: 13px; padding: 0; accent-color: var(--green-700); }
+.master-empty { display: block !important; padding: 22px !important; color: var(--ink-500); font-size: 9px; text-align: center; }
 
 .drawer-layer { position: fixed; z-index: 80; inset: 0; display: flex; justify-content: flex-end; }
 .drawer-scrim { position: absolute; inset: 0; border: 0; background: rgba(12, 24, 19, .45); backdrop-filter: blur(2px); cursor: default; }
@@ -408,6 +423,19 @@ tbody tr:hover { background: #fbfcfb; }
 .customer-picker-menu strong { overflow: hidden; color: var(--ink-950); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .customer-picker-menu small { margin-top: 3px; color: var(--ink-500); font-size: 9px; }
 .customer-picker-empty { padding: 14px 10px; color: var(--ink-500); font-size: 9px; text-align: center; }
+.multi-select-field { position: relative; display: flex; flex-direction: column; gap: 7px; }
+.multi-select-field > span { color: var(--ink-600); font-size: 10px; font-weight: 600; }
+.multi-select-trigger { width: 100%; min-height: 39px; padding: 0 11px; display: flex; align-items: center; justify-content: space-between; color: var(--ink-500); background: var(--surface); border: 1px solid var(--line); border-radius: 7px; font-size: 10px; text-align: left; cursor: pointer; }
+.multi-select-trigger .icon { transform: rotate(90deg); transition: transform .15s ease; }
+.multi-select-trigger.open { border-color: #aaa4cf; box-shadow: 0 0 0 3px var(--green-50); }
+.multi-select-trigger.open .icon { transform: rotate(-90deg); }
+.selection-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.selection-chips button { min-height: 24px; padding: 0 7px; display: inline-flex; align-items: center; gap: 5px; color: var(--green-700); background: var(--green-50); border: 1px solid var(--green-100); border-radius: 12px; font-size: 8px; cursor: pointer; }
+.multi-select-menu { padding: 10px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; background: var(--canvas); border: 1px solid var(--line); border-radius: 8px; }
+.drawer-form .multi-select-menu label { min-height: 30px; padding: 5px 7px; display: flex; flex-direction: row; align-items: center; gap: 7px; background: var(--surface); border: 1px solid var(--line-soft); border-radius: 6px; cursor: pointer; }
+.drawer-form .multi-select-menu label:has(input:checked) { color: var(--green-700); background: var(--green-50); border-color: var(--green-100); }
+.drawer-form .multi-select-menu input { width: 13px; min-height: 13px; padding: 0; accent-color: var(--green-700); box-shadow: none; }
+.drawer-form .multi-select-menu span { font-size: 8px; line-height: 1.25; }
 .site-address-field { display: flex; flex-direction: column; gap: 7px; }
 .field-label-row { display: flex; align-items: center; justify-content: space-between; }
 .field-label-row > span { color: var(--ink-600); font-size: 10px; font-weight: 600; }

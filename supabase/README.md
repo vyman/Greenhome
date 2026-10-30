@@ -6,6 +6,7 @@
 - `migrations/202506180002_phase1_operations_finance.sql` — inventory, labour, expense claims, invoices, payments, balance views, validation triggers, and RLS.
 - `migrations/202506180003_add_extended_roles.sql` — UltraTech Technical Executive and Labour / Field Worker roles.
 - `migrations/202506180004_extended_role_access.sql` — site and self-service access policies for the additional roles.
+- `migrations/202506180005_site_classification_masters.sql` — application-area classifications, expanded lead sources, referral fields, UltraTech Engineer master, and Team Member master.
 - `seed.sql` — repeatable sample data and feature flag defaults.
 
 ## Authentication users
