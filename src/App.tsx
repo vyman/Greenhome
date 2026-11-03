@@ -492,11 +492,51 @@ const applicationAreaLabels: Record<string, string> = Object.fromEntries(
   Object.entries(applicationAreaCodes).map(([label, code]) => [code, label])
 );
 
-const formFields: Record<string, { label: string; placeholder: string; type?: "select" | "textarea" | "file"; options?: string[]; required?: boolean }[]> = {
+const businessRelationshipCodes: Record<string, string> = {
+  "Service Only": "service_only",
+  "Material Sales Only": "material_sales_only",
+  "Both Service & Material Sales": "both_service_material_sales",
+};
+
+const customerTypeCodes: Record<string, string> = {
+  "Individual / Home Owner": "individual_home_owner",
+  Engineer: "engineer",
+  Architect: "architect",
+  Contractor: "contractor",
+  "Builder / Developer": "builder_developer",
+  "Property Manager": "property_manager",
+  Dealer: "dealer",
+  "Material Buyer": "material_buyer",
+  Applicator: "applicator",
+  Reseller: "reseller",
+  Other: "other",
+};
+const businessRelationshipLabels: Record<string, string> = Object.fromEntries(
+  Object.entries(businessRelationshipCodes).map(([label, code]) => [code, label])
+);
+const customerTypeLabels: Record<string, string> = Object.fromEntries(
+  Object.entries(customerTypeCodes).map(([label, code]) => [code, label])
+);
+
+type FormField = {
+  label: string;
+  placeholder: string;
+  type?: "select" | "textarea" | "file" | "date";
+  options?: string[];
+  optionGroups?: { label: string; options: string[] }[];
+  required?: boolean;
+};
+
+const formFields: Record<string, FormField[]> = {
   Customers: [
     { label: "Customer name", placeholder: "Enter full name or company", required: true },
     { label: "Primary mobile", placeholder: "+91", required: true },
     { label: "Email address", placeholder: "Optional email" },
+    { label: "Business relationship", placeholder: "Select relationship", type: "select", options: ["Service Only", "Material Sales Only", "Both Service & Material Sales"] },
+    { label: "Customer type", placeholder: "Select customer type", type: "select", optionGroups: [
+      { label: "Service Business", options: ["Individual / Home Owner", "Engineer", "Architect", "Contractor", "Builder / Developer", "Property Manager", "Other"] },
+      { label: "Material Sales", options: ["Dealer", "Material Buyer", "Applicator", "Reseller", "Other"] },
+    ] },
     { label: "Billing name", placeholder: "Name used on invoice" },
     { label: "Billing address", placeholder: "Full billing address", type: "textarea" },
     { label: "GSTIN", placeholder: "Optional GSTIN" },
@@ -517,10 +557,10 @@ const formFields: Record<string, { label: string; placeholder: string; type?: "s
   Quotations: [
     { label: "Site", placeholder: "Select Site ID", type: "select", options: ["GH-0148 · Krishna Residency", "GH-0147 · Aarunya Villa", "GH-0145 · Prestige Warehouse"], required: true },
     { label: "Quotation number", placeholder: "QT-2025-087", required: true },
-    { label: "Quotation date", placeholder: "DD/MM/YYYY", required: true },
+    { label: "Quotation date", placeholder: "Select quotation date", type: "date", required: true },
     { label: "Total amount", placeholder: "₹0.00", required: true },
     { label: "Status", placeholder: "Select status", type: "select", options: ["Draft", "Sent", "Follow-up Pending", "Accepted", "Rejected"] },
-    { label: "Follow-up date", placeholder: "DD/MM/YYYY" },
+    { label: "Follow-up date", placeholder: "Select follow-up date", type: "date" },
     { label: "Quotation PDF", placeholder: "Upload PDF", type: "file", required: true },
     { label: "Follow-up remarks", placeholder: "Add context for the next follow-up", type: "textarea" },
   ],
@@ -630,6 +670,23 @@ function FormDrawer({ module, onClose, onSave, initialValues, editing }: { modul
         const { data: sites } = await supabase.from("sites").select("site_code, project_name").is("archived_at", null).order("site_code", { ascending: false });
         if (sites?.length) next.Site = sites.map((site) => `${site.site_code} · ${site.project_name}`);
       }
+      if (module === "Quotations" && !editing) {
+        const year = new Date().getFullYear();
+        const prefix = `QT-${year}-`;
+        const { data: quotations, error } = await supabase.from("quotations").select("quotation_number").like("quotation_number", `${prefix}%`);
+        if (error) {
+          if (active) setSaveError(`Generating quotation number: ${error.message}`);
+        } else {
+          const latestSequence = (quotations || []).reduce((highest, quotation) => {
+            const sequence = Number.parseInt(quotation.quotation_number.slice(prefix.length), 10);
+            return Number.isFinite(sequence) ? Math.max(highest, sequence) : highest;
+          }, 0);
+          if (active) setValues((current) => ({
+            ...current,
+            "Quotation number": current["Quotation number"] || `${prefix}${String(latestSequence + 1).padStart(3, "0")}`,
+          }));
+        }
+      }
       if (module === "Godown & Materials") {
         const { data: products } = await supabase.from("products").select("name").eq("active", true).order("name");
         if (products?.length) next.Product = products.map((product) => product.name);
@@ -679,6 +736,7 @@ function FormDrawer({ module, onClose, onSave, initialValues, editing }: { modul
           <button className="drawer-close" onClick={onClose}><Icon name="close" size={18} /></button>
         </header>
         {module === "Sites" && <div className="form-notice"><Icon name="shield" size={17} /><span><strong>Internal Site ID is automatic</strong><small>The next ID will be generated after saving. UltraTech SR ID remains optional.</small></span></div>}
+        {module === "Quotations" && <div className="form-notice"><Icon name="invoice" size={17} /><span><strong>Quotation number is automatic</strong><small>A unique yearly sequence is generated from existing quotation records.</small></span></div>}
         {module === "Godown & Materials" && <div className="form-notice"><Icon name="box" size={17} /><span><strong>Confirmed transactions update stock</strong><small>Site issues that would create negative stock are blocked automatically.</small></span></div>}
         <div className="drawer-form">
           {fields.map((field) => field.label === "Referral person" && module === "Sites" && !referralSource ? null : field.label === "Application areas" && module === "Sites" ? (
@@ -710,10 +768,11 @@ function FormDrawer({ module, onClose, onSave, initialValues, editing }: { modul
                 </div>}
               </div>
                 : module === "Sites" && field.label === "Referral person" ? <select value={values[field.label] || ""} onChange={(event) => setValues((current) => ({ ...current, [field.label]: event.target.value }))}><option value="">{referralChoices.length ? field.placeholder : "No active names in this list"}</option>{referralChoices.map((choice) => <option value={choice.id} key={choice.id}>{choice.name}{choice.phone ? ` · ${choice.phone}` : ""}</option>)}</select>
-                : field.type === "select" ? <select value={values[field.label] || ""} onChange={(event) => setValues((current) => ({ ...current, [field.label]: event.target.value, ...(module === "Sites" && field.label === "Lead source" ? { "Referral person": "" } : {}) }))}><option value="" disabled>{field.placeholder}</option>{(dynamicOptions[field.label] || field.options)?.map((option) => <option key={option}>{option}</option>)}</select>
+                : field.type === "select" ? <select value={values[field.label] || ""} onChange={(event) => setValues((current) => ({ ...current, [field.label]: event.target.value, ...(module === "Sites" && field.label === "Lead source" ? { "Referral person": "" } : {}) }))}><option value="" disabled>{field.placeholder}</option>{(dynamicOptions[field.label] || field.options)?.map((option) => <option key={option}>{option}</option>)}{field.optionGroups?.map((group) => <optgroup label={group.label} key={group.label}>{group.options.map((option) => <option key={`${group.label}-${option}`}>{option}</option>)}</optgroup>)}</select>
                 : field.type === "textarea" ? <textarea rows={3} placeholder={field.placeholder} value={values[field.label] || ""} onChange={(event) => setValues((current) => ({ ...current, [field.label]: event.target.value }))} />
                 : field.type === "file" ? <span className="file-drop"><input type="file" accept=".pdf,image/jpeg,image/png,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (file) setFiles((current) => ({ ...current, [field.label]: file })); }} /><Icon name="document" size={18} /><span><strong>{files[field.label]?.name || field.placeholder}</strong><small>PDF, JPG, PNG or WebP · max 10 MB</small></span></span>
-                : <input placeholder={field.placeholder} value={values[field.label] || ""} onChange={(event) => setValues((current) => ({ ...current, [field.label]: event.target.value }))} />}
+                : field.type === "date" ? <input type="date" aria-label={field.placeholder} value={values[field.label] || ""} onChange={(event) => setValues((current) => ({ ...current, [field.label]: event.target.value }))} />
+                : <input className={module === "Quotations" && field.label === "Quotation number" ? "generated-field" : ""} readOnly={module === "Quotations" && field.label === "Quotation number"} placeholder={module === "Quotations" && field.label === "Quotation number" ? "Generating…" : field.placeholder} value={values[field.label] || ""} onChange={(event) => setValues((current) => ({ ...current, [field.label]: event.target.value }))} />}
             </label>
           ))}
           {module === "Labour Expense Claims" && <div className="receipt-warning span-two"><Icon name="alert" size={16} /><span>If no receipt is attached, the claim will be clearly marked <strong>No receipt</strong> and a reason will be required.</span></div>}
@@ -725,42 +784,48 @@ function FormDrawer({ module, onClose, onSave, initialValues, editing }: { modul
   );
 }
 
+type WetRoomMeasurement = { id: string; name: string; length: string; width: string; height: string; door: string; openings: string };
+type AreaMeasurement = { id: string; name: string; length: string; width: string; deduction: string; unit: "sq_ft" | "running_ft" | "points" | "count" };
+type InspectionPhoto = { file: File; area: string };
+
+const newWetRoom = (index: number): WetRoomMeasurement => ({ id: crypto.randomUUID(), name: `T${index}`, length: "", width: "", height: "", door: "2.5", openings: "0" });
+const newAreaSection = (index: number): AreaMeasurement => ({ id: crypto.randomUUID(), name: `Section ${String.fromCharCode(64 + index)}`, length: "", width: "", deduction: "0", unit: "sq_ft" });
+const areaLabel = (code: string) => applicationAreaLabels[code] || displayStatus(code);
+const isWetRoomArea = (code: string) => ["toilet", "toilet_bathroom"].includes(code);
+const isTerraceArea = (code: string) => ["terrace", "terrace_roof"].includes(code);
+const valueNumber = (value: string) => Number.parseFloat(value) || 0;
+const wetRoomTotal = (room: WetRoomMeasurement) => {
+  const floor = valueNumber(room.length) * valueNumber(room.width);
+  const netWall = Math.max(0, 2 * (valueNumber(room.length) + valueNumber(room.width)) - valueNumber(room.door) - valueNumber(room.openings));
+  return floor + netWall * valueNumber(room.height);
+};
+const sectionTotal = (section: AreaMeasurement) => section.unit === "sq_ft"
+  ? Math.max(0, valueNumber(section.length) * valueNumber(section.width) - valueNumber(section.deduction))
+  : Math.max(0, valueNumber(section.length) - valueNumber(section.deduction));
+
 function InspectionCalculator({ onBack, notify, onSaved, existingInspectionId }: { onBack: () => void; notify: (message: string) => void; onSaved: () => Promise<void>; existingInspectionId?: string | null }) {
-  const [inspectionSites, setInspectionSites] = useState<{ id: string; name: string; customer: string; address: string; areas: string }[]>([]);
+  const [inspectionSites, setInspectionSites] = useState<{ id: string; name: string; customer: string; address: string; areas: string[] }[]>([]);
   const [siteId, setSiteId] = useState("");
   const selectedSite = inspectionSites.find((site) => site.id === siteId);
   const [buildingType, setBuildingType] = useState("Existing building");
-  const [applicationArea, setApplicationArea] = useState("Toilet");
+  const [inspectionAreas, setInspectionAreas] = useState<string[]>([]);
+  const [activeArea, setActiveArea] = useState("");
   const [surfaceWetness, setSurfaceWetness] = useState("Damp");
   const [selectedProblems, setSelectedProblems] = useState<string[]>(["Leakage / Seepage"]);
   const [findings, setFindings] = useState("");
-  const [inspectionPhotos, setInspectionPhotos] = useState<File[]>([]);
+  const [inspectionPhotos, setInspectionPhotos] = useState<InspectionPhoto[]>([]);
+  const [wetRooms, setWetRooms] = useState<WetRoomMeasurement[]>([newWetRoom(1)]);
+  const [areaMeasurements, setAreaMeasurements] = useState<Record<string, AreaMeasurement[]>>({});
   const [savedInspectionId, setSavedInspectionId] = useState<string | null>(existingInspectionId || null);
   const [savingInspection, setSavingInspection] = useState(false);
   const [inspectionError, setInspectionError] = useState("");
   const [sitesLoading, setSitesLoading] = useState(true);
-  const [length, setLength] = useState("4");
-  const [width, setWidth] = useState("6");
-  const [height, setHeight] = useState("7");
-  const [door, setDoor] = useState("2.5");
-  const [otherOpening, setOtherOpening] = useState("0");
-  const [terraceLength, setTerraceLength] = useState("40");
-  const [terraceWidth, setTerraceWidth] = useState("22");
-  const [terraceDeduction, setTerraceDeduction] = useState("80");
-  const number = (value: string) => Number.parseFloat(value) || 0;
-  const floorArea = number(length) * number(width);
-  const perimeter = 2 * (number(length) + number(width));
-  const netWall = Math.max(0, perimeter - number(door) - number(otherOpening));
-  const wallArea = netWall * number(height);
-  const toiletTotal = floorArea + wallArea;
-  const terraceGross = number(terraceLength) * number(terraceWidth);
-  const terraceNet = Math.max(0, terraceGross - number(terraceDeduction));
 
   useEffect(() => {
     let active = true;
     supabase
       .from("sites")
-      .select("site_code, project_name, address, application_areas, customers(name)")
+      .select("site_code, project_name, address, application_areas, customers!sites_customer_id_fkey(name)")
       .is("archived_at", null)
       .order("site_code", { ascending: false })
       .then(({ data, error }) => {
@@ -780,7 +845,7 @@ function InspectionCalculator({ onBack, notify, onSaved, existingInspectionId }:
           name: site.project_name,
           customer: Array.isArray(site.customers) ? site.customers[0]?.name || "Customer" : site.customers?.name || "Customer",
           address: site.address,
-          areas: (site.application_areas || []).join(", "),
+          areas: site.application_areas || [],
         }));
         setInspectionSites(mapped);
         setSiteId((current) => mapped.some((site) => site.id === current) ? current : mapped[0].id);
@@ -793,15 +858,30 @@ function InspectionCalculator({ onBack, notify, onSaved, existingInspectionId }:
   }, [siteId, existingInspectionId]);
 
   useEffect(() => {
+    if (!selectedSite || existingInspectionId) return;
+    const areas = selectedSite.areas.length ? selectedSite.areas : ["toilet"];
+    setInspectionAreas(areas);
+    setActiveArea(areas[0]);
+    setAreaMeasurements((current) => {
+      const next = { ...current };
+      areas.filter((area) => !isWetRoomArea(area)).forEach((area) => {
+        if (!next[area]) next[area] = [newAreaSection(1)];
+      });
+      return next;
+    });
+  }, [selectedSite, existingInspectionId]);
+
+  useEffect(() => {
     if (!existingInspectionId) return;
     let active = true;
     const loadInspection = async () => {
       setSavingInspection(true);
       setInspectionError("");
-      const [inspectionResult, toiletResult, terraceResult] = await Promise.all([
+      const [inspectionResult, toiletResult, terraceResult, otherResult] = await Promise.all([
         supabase.from("inspections").select("id, site_id, building_type, application_areas, surface_wetness, observed_problems, findings, status").eq("id", existingInspectionId).single(),
-        supabase.from("toilet_measurements").select("floor_length_ft, floor_width_ft, wall_height_ft, door_deduction_ft, additional_opening_deduction_ft").eq("inspection_id", existingInspectionId).eq("toilet_id", "T1").maybeSingle(),
-        supabase.from("terrace_sections").select("length_ft, width_ft, approved_exclusion_sqft").eq("inspection_id", existingInspectionId).eq("section_name", "Section A").maybeSingle(),
+        supabase.from("toilet_measurements").select("toilet_id, floor_length_ft, floor_width_ft, wall_height_ft, door_deduction_ft, additional_opening_deduction_ft").eq("inspection_id", existingInspectionId).order("toilet_id"),
+        supabase.from("terrace_sections").select("section_name, length_ft, width_ft, approved_exclusion_sqft").eq("inspection_id", existingInspectionId).order("section_name"),
+        supabase.from("other_measurements").select("application_area, label, quantity, unit, deductions").eq("inspection_id", existingInspectionId).order("label"),
       ]);
       if (!active) return;
       if (inspectionResult.error || !inspectionResult.data) {
@@ -818,7 +898,9 @@ function InspectionCalculator({ onBack, notify, onSaved, existingInspectionId }:
       const inspection = inspectionResult.data;
       setSiteId(linkedSite.site_code);
       setBuildingType(inspection.building_type === "new" ? "New building" : "Existing building");
-      setApplicationArea(inspection.application_areas?.[0] ? displayStatus(inspection.application_areas[0]) : "Toilet");
+      const loadedAreas = inspection.application_areas?.length ? inspection.application_areas : ["toilet"];
+      setInspectionAreas(loadedAreas);
+      setActiveArea(loadedAreas[0]);
       const wetnessLabels: Record<string, string> = { dry: "Dry", damp: "Damp", wet_standing_water: "Wet / Standing Water" };
       setSurfaceWetness(wetnessLabels[inspection.surface_wetness] || "Damp");
       const problemLabels: Record<string, string> = {
@@ -831,24 +913,47 @@ function InspectionCalculator({ onBack, notify, onSaved, existingInspectionId }:
       };
       setSelectedProblems((inspection.observed_problems || []).map((problem: string) => problemLabels[problem] || displayStatus(problem)));
       setFindings(inspection.findings || "");
-      if (toiletResult.data) {
-        setLength(String(toiletResult.data.floor_length_ft));
-        setWidth(String(toiletResult.data.floor_width_ft));
-        setHeight(String(toiletResult.data.wall_height_ft));
-        setDoor(String(toiletResult.data.door_deduction_ft));
-        setOtherOpening(String(toiletResult.data.additional_opening_deduction_ft));
+      setWetRooms(toiletResult.data?.length ? toiletResult.data.map((room) => ({
+        id: crypto.randomUUID(), name: room.toilet_id, length: String(room.floor_length_ft), width: String(room.floor_width_ft),
+        height: String(room.wall_height_ft), door: String(room.door_deduction_ft), openings: String(room.additional_opening_deduction_ft),
+      })) : [newWetRoom(1)]);
+      const measurements: Record<string, AreaMeasurement[]> = {};
+      if (terraceResult.data?.length) {
+        const terraceArea = loadedAreas.find(isTerraceArea) || "terrace";
+        measurements[terraceArea] = terraceResult.data.map((section) => ({
+          id: crypto.randomUUID(), name: section.section_name, length: String(section.length_ft), width: String(section.width_ft),
+          deduction: String(section.approved_exclusion_sqft), unit: "sq_ft",
+        }));
       }
-      if (terraceResult.data) {
-        setTerraceLength(String(terraceResult.data.length_ft));
-        setTerraceWidth(String(terraceResult.data.width_ft));
-        setTerraceDeduction(String(terraceResult.data.approved_exclusion_sqft));
-      }
+      (otherResult.data || []).forEach((section) => {
+        if (!measurements[section.application_area]) measurements[section.application_area] = [];
+        measurements[section.application_area].push({
+          id: crypto.randomUUID(), name: section.label, length: String(section.quantity), width: "1",
+          deduction: String(section.deductions), unit: section.unit as AreaMeasurement["unit"],
+        });
+      });
+      loadedAreas.filter((area: string) => !isWetRoomArea(area)).forEach((area: string) => {
+        if (!measurements[area]) measurements[area] = [newAreaSection(1)];
+      });
+      setAreaMeasurements(measurements);
       setSavedInspectionId(existingInspectionId);
       setSavingInspection(false);
     };
     void loadInspection();
     return () => { active = false; };
   }, [existingInspectionId]);
+
+  const updateWetRoom = (id: string, field: keyof WetRoomMeasurement, value: string) => {
+    setWetRooms((current) => current.map((room) => room.id === id ? { ...room, [field]: value } : room));
+  };
+  const updateSection = (area: string, id: string, field: keyof AreaMeasurement, value: string) => {
+    setAreaMeasurements((current) => ({ ...current, [area]: (current[area] || []).map((section) => section.id === id ? { ...section, [field]: value } : section) }));
+  };
+  const areaTotal = (area: string) => isWetRoomArea(area)
+    ? wetRooms.reduce((sum, room) => sum + wetRoomTotal(room), 0)
+    : (areaMeasurements[area] || []).reduce((sum, section) => sum + sectionTotal(section), 0);
+  const grandTotal = inspectionAreas.reduce((sum, area) => sum + areaTotal(area), 0);
+  const completedAreas = inspectionAreas.filter((area) => areaTotal(area) > 0).length;
 
   const persistInspection = async (status: "draft" | "submitted") => {
     setSavingInspection(true);
@@ -857,6 +962,7 @@ function InspectionCalculator({ onBack, notify, onSaved, existingInspectionId }:
     let inspectionId = savedInspectionId;
     try {
       if (!siteId || !selectedSite) throw new Error("Select a Site that is accessible to your account before saving the inspection.");
+      if (!inspectionAreas.length) throw new Error("Add at least one application area before saving the inspection.");
       const [{ data: site, error: siteError }, { data: authData }] = await Promise.all([
         supabase.from("sites").select("id").eq("site_code", siteId).single(),
         supabase.auth.getUser(),
@@ -868,7 +974,7 @@ function InspectionCalculator({ onBack, notify, onSaved, existingInspectionId }:
       if (inspectionId) {
         const { error } = await supabase.from("inspections").update({
           building_type: buildingType === "New building" ? "new" : "existing",
-          application_areas: [applicationArea.toLowerCase().replaceAll(" ", "_")],
+          application_areas: inspectionAreas,
           surface_wetness: surfaceWetness.toLowerCase().replaceAll(" / ", "_").replaceAll(" ", "_"),
           observed_problems: selectedProblems.map((problem) => problem.toLowerCase().replaceAll(" / ", "_").replaceAll(" ", "_")),
           findings: findings || null,
@@ -883,7 +989,7 @@ function InspectionCalculator({ onBack, notify, onSaved, existingInspectionId }:
           inspected_at: new Date().toISOString(),
           inspector_id: authData.user.id,
           building_type: buildingType === "New building" ? "new" : "existing",
-          application_areas: [applicationArea.toLowerCase().replaceAll(" ", "_")],
+          application_areas: inspectionAreas,
           surface_wetness: surfaceWetness.toLowerCase().replaceAll(" / ", "_").replaceAll(" ", "_"),
           observed_problems: selectedProblems.map((problem) => problem.toLowerCase().replaceAll(" / ", "_").replaceAll(" ", "_")),
           findings: findings || null,
@@ -896,29 +1002,36 @@ function InspectionCalculator({ onBack, notify, onSaved, existingInspectionId }:
 
       await onSaved();
       saveStage = "Saving measurements";
-      const [{ error: toiletError }, { error: terraceError }] = await Promise.all([
-        supabase.from("toilet_measurements").upsert({
-          inspection_id: inspectionId,
-          toilet_id: "T1",
-          floor_length_ft: number(length),
-          floor_width_ft: number(width),
-          wall_height_ft: number(height),
-          door_deduction_ft: number(door),
-          additional_opening_deduction_ft: number(otherOpening),
-        }, { onConflict: "inspection_id,toilet_id" }),
-        supabase.from("terrace_sections").upsert({
-          inspection_id: inspectionId,
-          section_name: "Section A",
-          length_ft: number(terraceLength),
-          width_ft: number(terraceWidth),
-          approved_exclusion_sqft: number(terraceDeduction),
-        }, { onConflict: "inspection_id,section_name" }),
+      const [{ error: toiletDeleteError }, { error: terraceDeleteError }, { error: otherDeleteError }] = await Promise.all([
+        supabase.from("toilet_measurements").delete().eq("inspection_id", inspectionId),
+        supabase.from("terrace_sections").delete().eq("inspection_id", inspectionId),
+        supabase.from("other_measurements").delete().eq("inspection_id", inspectionId),
       ]);
-      if (toiletError) throw toiletError;
-      if (terraceError) throw terraceError;
+      if (toiletDeleteError || terraceDeleteError || otherDeleteError) throw toiletDeleteError || terraceDeleteError || otherDeleteError;
+      const toiletRows = inspectionAreas.some(isWetRoomArea) ? wetRooms.map((room) => ({
+        inspection_id: inspectionId, toilet_id: room.name, floor_length_ft: valueNumber(room.length), floor_width_ft: valueNumber(room.width),
+        wall_height_ft: valueNumber(room.height), door_deduction_ft: valueNumber(room.door), additional_opening_deduction_ft: valueNumber(room.openings),
+      })) : [];
+      const terraceRows = inspectionAreas.filter(isTerraceArea).flatMap((area) => (areaMeasurements[area] || []).map((section) => ({
+        inspection_id: inspectionId, section_name: section.name, length_ft: valueNumber(section.length),
+        width_ft: valueNumber(section.width), approved_exclusion_sqft: valueNumber(section.deduction),
+      })));
+      const otherRows = inspectionAreas.filter((area) => !isWetRoomArea(area) && !isTerraceArea(area)).flatMap((area) => (areaMeasurements[area] || []).map((section) => ({
+        inspection_id: inspectionId, application_area: area, label: section.name,
+        quantity: section.unit === "sq_ft" ? valueNumber(section.length) * valueNumber(section.width) : valueNumber(section.length),
+        unit: section.unit, deductions: valueNumber(section.deduction),
+      })));
+      const measurementResults = await Promise.all([
+        toiletRows.length ? supabase.from("toilet_measurements").insert(toiletRows) : Promise.resolve({ error: null }),
+        terraceRows.length ? supabase.from("terrace_sections").insert(terraceRows) : Promise.resolve({ error: null }),
+        otherRows.length ? supabase.from("other_measurements").insert(otherRows) : Promise.resolve({ error: null }),
+      ]);
+      const measurementError = measurementResults.find((result) => result.error)?.error;
+      if (measurementError) throw measurementError;
 
       saveStage = "Uploading inspection photos";
-      for (const file of inspectionPhotos) {
+      for (const photo of inspectionPhotos) {
+        const file = photo.file;
         if (file.size > 10 * 1024 * 1024) throw new Error(`${file.name} is larger than 10 MB.`);
         const objectPath = `${site.id}/inspection_photo/${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "-")}`;
         const { error: uploadError } = await supabase.storage.from("site-files").upload(objectPath, file, { contentType: file.type });
@@ -927,6 +1040,7 @@ function InspectionCalculator({ onBack, notify, onSaved, existingInspectionId }:
           site_id: site.id,
           inspection_id: inspectionId,
           category: "inspection_photo",
+          application_area: photo.area,
           caption: file.name,
           bucket_id: "site-files",
           object_path: objectPath,
@@ -956,11 +1070,13 @@ function InspectionCalculator({ onBack, notify, onSaved, existingInspectionId }:
     <div className="content functional-page">
       <button className="back-link" onClick={onBack}><Icon name="chevron" size={14} />Back to inspections</button>
       <section className="page-heading module-heading">
-        <div><p className="eyebrow">{existingInspectionId ? "EDIT INSPECTION" : "NEW INSPECTION"}{selectedSite ? ` · ${selectedSite.id}` : ""}</p><h1>Inspection & measurement</h1><p>{selectedSite ? `${selectedSite.name} · ${selectedSite.address}` : "Select an accessible Site to begin"}</p></div>
+        <div><p className="eyebrow">{existingInspectionId ? "EDIT INSPECTION" : "GUIDED SITE INSPECTION"}{selectedSite ? ` · ${selectedSite.id}` : ""}</p><h1>Inspection & measurements</h1><p>{selectedSite ? `${selectedSite.name} · ${completedAreas} of ${inspectionAreas.length} areas measured` : "Select an accessible Site to begin"}</p></div>
         <div className="heading-actions"><Button variant="secondary" onClick={() => persistInspection("draft")}>{savingInspection ? "Saving…" : "Save draft"}</Button><Button icon="check" onClick={() => persistInspection("submitted")}>{savingInspection ? "Saving…" : "Submit inspection"}</Button></div>
       </section>
-      <div className="stepper">
-        {["Site details", "Inspection", "Measurements", "Photos", "Review"].map((step, index) => <div className={index <= 2 ? "done" : ""} key={step}><span>{index < 2 ? <Icon name="check" size={12} /> : index + 1}</span><b>{step}</b></div>)}
+      <div className="inspection-progress">
+        <span><Icon name="building" size={15} /><b>Site linked</b></span>
+        <div><i style={{ width: `${inspectionAreas.length ? (completedAreas / inspectionAreas.length) * 100 : 0}%` }} /></div>
+        <strong>{completedAreas}/{inspectionAreas.length} areas measured</strong>
       </div>
       {inspectionError && <div className="inspection-error"><Icon name="alert" size={16} /><span><strong>Inspection was not saved.</strong>{inspectionError}</span></div>}
       <div className="functional-grid">
@@ -972,61 +1088,76 @@ function InspectionCalculator({ onBack, notify, onSaved, existingInspectionId }:
               <span className="record-icon"><Icon name="building" size={17} /></span>
               <div><small>Customer</small><strong>{selectedSite.customer}</strong></div>
               <div><small>Site address</small><strong>{selectedSite.address}</strong></div>
-              <div><small>Application areas</small><strong>{selectedSite.areas}</strong></div>
+              <div><small>Application areas</small><strong>{selectedSite.areas.map(areaLabel).join(", ")}</strong></div>
               <span className="linked-badge"><Icon name="check" size={11} />Linked</span>
             </div> : <div className="no-site-access"><Icon name="alert" size={16} /><span>No Site is available for inspection. Assign this user to a Site or sign in with an account that has Site access.</span></div>}
           </div>
 
-          <div className="form-section-head divider-top"><div><span className="section-number">02</span><div><h2>Building assessment</h2><p>Record the inspection type and observed site conditions{selectedSite ? ` for ${selectedSite.id}` : ""}.</p></div></div></div>
+          <div className="form-section-head divider-top"><div><span className="section-number">02</span><div><h2>Visit assessment</h2><p>Record the overall building and surface condition once for this visit.</p></div></div></div>
           <div className="segmented">{["New building", "Existing building"].map((type) => <button className={buildingType === type ? "active" : ""} onClick={() => setBuildingType(type)} key={type}>{type}</button>)}</div>
           <div className="inspection-fields">
-            <label><span>Application area</span><select value={applicationArea} onChange={(event) => setApplicationArea(event.target.value)}><option>Toilet</option><option>Terrace</option><option>Balcony</option><option>Sump</option><option>Water Tank</option></select></label>
             <label><span>Surface wetness</span><select value={surfaceWetness} onChange={(event) => setSurfaceWetness(event.target.value)}><option>Dry</option><option>Damp</option><option>Wet / Standing Water</option></select></label>
-            <label className="span-two"><span>{buildingType === "Existing building" ? "Observed problems" : "Surface condition"}</span><div className="choice-grid">{(buildingType === "Existing building" ? ["Leakage / Seepage", "Dampness", "Cracks", "Peeling", "Water stagnation", "Failed coating"] : ["Clean", "Dust present", "Loose material", "Debris present"]).map((choice) => <button className={selectedProblems.includes(choice) ? "selected" : ""} onClick={() => setSelectedProblems((current) => current.includes(choice) ? current.filter((item) => item !== choice) : [...current, choice])} key={choice}>{choice}</button>)}</div></label>
+            <label><span>{buildingType === "Existing building" ? "Observed problems" : "Surface condition"}</span><div className="choice-grid">{(buildingType === "Existing building" ? ["Leakage / Seepage", "Dampness", "Cracks", "Peeling", "Water stagnation", "Failed coating"] : ["Clean", "Dust present", "Loose material", "Debris present"]).map((choice) => <button type="button" className={selectedProblems.includes(choice) ? "selected" : ""} onClick={() => setSelectedProblems((current) => current.includes(choice) ? current.filter((item) => item !== choice) : [...current, choice])} key={choice}>{choice}</button>)}</div></label>
             <label className="span-two"><span>Findings and suspected cause</span><textarea rows={3} placeholder="Describe the exact problem location and your findings…" value={findings} onChange={(event) => setFindings(event.target.value)} /></label>
           </div>
 
-          <div className="form-section-head divider-top"><div><span className="section-number">03</span><div><h2>Toilet T1 measurement</h2><p>Wall height is always entered manually. Opening deductions apply only when excluded from scope.</p></div></div><button className="small-action"><Icon name="plus" size={13} />Add toilet</button></div>
-          <div className="measurement-inputs">
-            <MeasureInput label="Floor length" value={length} setValue={setLength} />
-            <MeasureInput label="Floor width" value={width} setValue={setWidth} />
-            <MeasureInput label="Wall height" value={height} setValue={setHeight} />
-            <MeasureInput label="Door deduction" value={door} setValue={setDoor} />
-            <MeasureInput label="Other openings" value={otherOpening} setValue={setOtherOpening} />
+          <div className="area-workspace divider-top">
+            <div className="form-section-head"><div><span className="section-number">03</span><div><h2>Area-by-area measurements</h2><p>Work through every application area configured on the linked site.</p></div></div></div>
+            <div className="area-tabs">
+              {inspectionAreas.map((area) => <button type="button" className={activeArea === area ? "active" : ""} key={area} onClick={() => setActiveArea(area)}><span>{areaTotal(area) > 0 ? <Icon name="check" size={12} /> : inspectionAreas.indexOf(area) + 1}</span><b>{areaLabel(area)}</b><small>{areaTotal(area) > 0 ? `${areaTotal(area).toFixed(1)} sq ft` : "Not measured"}</small></button>)}
+            </div>
+            {activeArea && <div className="active-area">
+              <div className="active-area-head">
+                <div><span>{areaLabel(activeArea).slice(0, 2).toUpperCase()}</span><div><h2>{areaLabel(activeArea)}</h2><p>{isWetRoomArea(activeArea) ? "Add each room separately. Floor and wall areas are calculated automatically." : "Split irregular spaces into as many measurable sections as needed."}</p></div></div>
+                <button type="button" className="small-action" onClick={() => isWetRoomArea(activeArea)
+                  ? setWetRooms((current) => [...current, newWetRoom(current.length + 1)])
+                  : setAreaMeasurements((current) => ({ ...current, [activeArea]: [...(current[activeArea] || []), newAreaSection((current[activeArea] || []).length + 1)] }))}><Icon name="plus" size={13} />Add {isWetRoomArea(activeArea) ? "room" : "section"}</button>
+              </div>
+              <div className="measurement-list">
+                {isWetRoomArea(activeArea) ? wetRooms.map((room, index) => {
+                  const floor = valueNumber(room.length) * valueNumber(room.width);
+                  const perimeter = 2 * (valueNumber(room.length) + valueNumber(room.width));
+                  const netWall = Math.max(0, perimeter - valueNumber(room.door) - valueNumber(room.openings));
+                  const total = wetRoomTotal(room);
+                  return <div className="measurement-card" key={room.id}>
+                    <div className="measurement-card-head"><label><span>Room / toilet name</span><input value={room.name} onChange={(event) => updateWetRoom(room.id, "name", event.target.value)} /></label><strong>{total.toFixed(1)} sq ft</strong>{wetRooms.length > 1 && <button type="button" aria-label={`Remove ${room.name}`} onClick={() => setWetRooms((current) => current.filter((item) => item.id !== room.id))}><Icon name="close" size={14} /></button>}</div>
+                    <div className="measurement-inputs"><MeasureInput label="Floor length" value={room.length} setValue={(value) => updateWetRoom(room.id, "length", value)} /><MeasureInput label="Floor width" value={room.width} setValue={(value) => updateWetRoom(room.id, "width", value)} /><MeasureInput label="Wall height" value={room.height} setValue={(value) => updateWetRoom(room.id, "height", value)} /><MeasureInput label="Door deduction" value={room.door} setValue={(value) => updateWetRoom(room.id, "door", value)} /><MeasureInput label="Other openings" value={room.openings} setValue={(value) => updateWetRoom(room.id, "openings", value)} /></div>
+                    <div className="calculation-strip"><Calc label="Floor area" value={floor} /><Calc label="Perimeter" value={perimeter} unit="ft" /><Calc label="Net wall length" value={netWall} unit="ft" /><Calc label="Wall area" value={netWall * valueNumber(room.height)} /><Calc label="Combined total" value={total} strong /></div>
+                  </div>;
+                }) : (areaMeasurements[activeArea] || []).map((section) => {
+                  const total = sectionTotal(section);
+                  return <div className="measurement-card" key={section.id}>
+                    <div className="measurement-card-head"><label><span>Section name</span><input value={section.name} onChange={(event) => updateSection(activeArea, section.id, "name", event.target.value)} /></label><strong>{total.toFixed(1)} {section.unit === "sq_ft" ? "sq ft" : displayStatus(section.unit)}</strong>{(areaMeasurements[activeArea] || []).length > 1 && <button type="button" aria-label={`Remove ${section.name}`} onClick={() => setAreaMeasurements((current) => ({ ...current, [activeArea]: current[activeArea].filter((item) => item.id !== section.id) }))}><Icon name="close" size={14} /></button>}</div>
+                    <div className="measurement-inputs section-inputs">
+                      <label><span>Measurement type</span><select value={section.unit} onChange={(event) => updateSection(activeArea, section.id, "unit", event.target.value)}><option value="sq_ft">Area · sq ft</option><option value="running_ft">Running ft</option><option value="points">Points</option><option value="count">Count</option></select></label>
+                      <MeasureInput label={section.unit === "sq_ft" ? "Length" : "Quantity"} value={section.length} setValue={(value) => updateSection(activeArea, section.id, "length", value)} unit={section.unit === "sq_ft" ? "ft" : ""} />
+                      {section.unit === "sq_ft" && <MeasureInput label="Width" value={section.width} setValue={(value) => updateSection(activeArea, section.id, "width", value)} />}
+                      <MeasureInput label="Approved deduction" value={section.deduction} setValue={(value) => updateSection(activeArea, section.id, "deduction", value)} unit={section.unit === "sq_ft" ? "sq ft" : ""} />
+                    </div>
+                    <div className="section-result"><span>Net measured quantity</span><strong>{total.toFixed(1)} {section.unit === "sq_ft" ? "sq ft" : displayStatus(section.unit)}</strong></div>
+                  </div>;
+                })}
+              </div>
+              <div className="area-photo-row"><div><Icon name="document" size={17} /><span><strong>Area photos</strong><small>{inspectionPhotos.filter((photo) => photo.area === activeArea).length} selected for {areaLabel(activeArea)}</small></span></div><label><input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => { const files = Array.from(event.target.files || []); setInspectionPhotos((current) => [...current, ...files.map((file) => ({ file, area: activeArea }))]); event.target.value = ""; }} /><Icon name="plus" size={13} />Add photos</label></div>
+            </div>}
           </div>
-          <div className="calculation-strip">
-            <Calc label="Floor area" value={floorArea} />
-            <Calc label="Perimeter" value={perimeter} unit="ft" />
-            <Calc label="Net wall length" value={netWall} unit="ft" />
-            <Calc label="Wall area" value={wallArea} />
-            <Calc label="Combined total" value={toiletTotal} strong />
-          </div>
-
-          <div className="form-section-head divider-top"><div><span className="section-number">04</span><div><h2>Terrace section A</h2><p>Record regular sections and approved exclusions separately.</p></div></div><button className="small-action"><Icon name="plus" size={13} />Add section</button></div>
-          <div className="measurement-inputs terrace">
-            <MeasureInput label="Section length" value={terraceLength} setValue={setTerraceLength} />
-            <MeasureInput label="Section width" value={terraceWidth} setValue={setTerraceWidth} />
-            <MeasureInput label="Approved exclusions" value={terraceDeduction} setValue={setTerraceDeduction} />
-          </div>
-          <div className="terrace-result"><span>Gross area <strong>{terraceGross.toFixed(1)} sq ft</strong></span><Icon name="arrow" size={15} /><span>Deductions <strong>{number(terraceDeduction).toFixed(1)} sq ft</strong></span><Icon name="arrow" size={15} /><span className="net">Net applied area <strong>{terraceNet.toFixed(1)} sq ft</strong></span></div>
         </section>
         <aside className="functional-side">
           <section className="panel summary-card">
-            <div><span className="insight-icon"><Icon name="document" size={18} /></span><div><h2>Measurement summary</h2><p>Updates as values change</p></div></div>
-            <div className="summary-line"><span>Toilet T1<small>Floor + wall area</small></span><strong>{toiletTotal.toFixed(1)} sq ft</strong></div>
-            <div className="summary-line"><span>Terrace<small>Net applied area</small></span><strong>{terraceNet.toFixed(1)} sq ft</strong></div>
-            <div className="grand-total"><span>Grand total</span><strong>{(toiletTotal + terraceNet).toFixed(1)} <small>sq ft</small></strong></div>
+            <div><span className="insight-icon"><Icon name="document" size={18} /></span><div><h2>Inspection summary</h2><p>Live area totals</p></div></div>
+            {inspectionAreas.map((area) => <button type="button" className={`summary-line ${activeArea === area ? "active" : ""}`} key={area} onClick={() => setActiveArea(area)}><span>{areaLabel(area)}<small>{isWetRoomArea(area) ? `${wetRooms.length} room${wetRooms.length === 1 ? "" : "s"}` : `${(areaMeasurements[area] || []).length} section${(areaMeasurements[area] || []).length === 1 ? "" : "s"}`}</small></span><strong>{areaTotal(area).toFixed(1)} sq ft</strong></button>)}
+            <div className="grand-total"><span>Grand total</span><strong>{grandTotal.toFixed(1)} <small>sq ft</small></strong></div>
           </section>
-          <section className="panel test-card"><span><Icon name="check" size={15} /></span><div><strong>Approved test case matches</strong><p>4 × 6 ft, wall 7 ft, door 2.5 ft produces a combined total of 146.5 sq ft.</p></div></section>
-          <section className="panel photo-drop"><Icon name="document" size={22} /><strong>{inspectionPhotos.length ? `${inspectionPhotos.length} photo(s) selected` : "Add inspection photos"}</strong><span>Files are uploaded when the inspection is saved</span><label><input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => setInspectionPhotos(Array.from(event.target.files || []))} />Choose photos</label></section>
+          <section className="panel test-card"><span><Icon name="check" size={15} /></span><div><strong>Guided inspection enabled</strong><p>Each room and section is saved independently and remains linked to this visit.</p></div></section>
+          <section className="panel photo-drop"><Icon name="document" size={22} /><strong>{inspectionPhotos.length ? `${inspectionPhotos.length} photo(s) ready` : "Area-tagged photos"}</strong><span>Add photos inside each area so evidence stays organized.</span></section>
         </aside>
       </div>
     </div>
   );
 }
 
-function MeasureInput({ label, value, setValue }: { label: string; value: string; setValue: (value: string) => void }) {
-  return <label><span>{label}</span><div><input type="number" min="0" step="0.1" value={value} onChange={(event) => setValue(event.target.value)} /><small>ft</small></div></label>;
+function MeasureInput({ label, value, setValue, unit = "ft" }: { label: string; value: string; setValue: (value: string) => void; unit?: string }) {
+  return <label><span>{label}</span><div><input type="number" min="0" step="0.1" value={value} placeholder="0" onChange={(event) => setValue(event.target.value)} />{unit && <small>{unit}</small>}</div></label>;
 }
 
 function Calc({ label, value, unit = "sq ft", strong = false }: { label: string; value: number; unit?: string; strong?: boolean }) {
@@ -1450,7 +1581,7 @@ export default function App() {
 
   const loadCoreData = async () => {
     const [customersResult, sitesResult, profilesResult, inspectionsResult] = await Promise.all([
-      supabase.from("customers").select("id, customer_code, name, primary_mobile, email, billing_name, billing_address, gstin, notes, created_at").is("archived_at", null).order("created_at", { ascending: false }),
+      supabase.from("customers").select("id, customer_code, name, primary_mobile, email, business_relationship, customer_type, billing_name, billing_address, gstin, notes, created_at").is("archived_at", null).order("created_at", { ascending: false }),
       supabase.from("sites").select("id, site_code, customer_id, project_name, address, site_type, application_areas, lead_source, ultratech_sr_id, ultratech_engineer_id, team_member_id, referral_customer_id, visit_date, supervisor_id, status, notes, created_at").is("archived_at", null).order("created_at", { ascending: false }),
       supabase.from("profiles").select("id, email, full_name, phone, role, active, created_at, updated_at").order("created_at", { ascending: true }),
       supabase.from("inspections").select("id, site_id, visit_number, inspected_at, inspector_id, building_type, application_areas, status, findings, remarks, created_at").order("inspected_at", { ascending: false }),
@@ -1522,6 +1653,8 @@ export default function App() {
           "Customer name": customer.name || "",
           "Primary mobile": customer.primary_mobile || "",
           "Email address": customer.email || "",
+          "Business relationship": businessRelationshipLabels[customer.business_relationship] || "",
+          "Customer type": customerTypeLabels[customer.customer_type] || "",
           "Billing name": customer.billing_name || "",
           "Billing address": customer.billing_address || "",
           GSTIN: customer.gstin || "",
@@ -1699,6 +1832,8 @@ export default function App() {
           name: values["Customer name"].trim(),
           primary_mobile: values["Primary mobile"].trim(),
           email: values["Email address"]?.trim() || null,
+          business_relationship: businessRelationshipCodes[values["Business relationship"]] || null,
+          customer_type: customerTypeCodes[values["Customer type"]] || null,
           billing_name: values["Billing name"]?.trim() || null,
           billing_address: values["Billing address"]?.trim() || null,
           gstin: values.GSTIN?.trim() || null,
