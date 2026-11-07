@@ -8,6 +8,7 @@
 - `migrations/202506180004_extended_role_access.sql` — site and self-service access policies for the additional roles.
 - `migrations/202506180005_site_classification_masters.sql` — application-area classifications, expanded lead sources, referral fields, UltraTech Engineer master, and Team Member master.
 - `migrations/202506180006_customer_business_classification.sql` — customer business relationship and customer type classifications.
+- `migrations/202506180007_inventory_integrity.sql` — row lock on stock checks, return limit per site and product, and unique product names (case-insensitive).
 - `seed.sql` — repeatable sample data and feature flag defaults.
 
 ## Authentication users
