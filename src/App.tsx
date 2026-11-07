@@ -1758,9 +1758,9 @@ export default function App() {
 
   const openModuleRow = async (row: string[], tab?: string) => {
     if (activeNav === "Godown & Materials") {
-      const product = tab === "Products" ? liveProducts?.find((item) => item.name === row[0].split("\n")[0]) : null;
+      const product = tab === "Products" || tab === "Stock balance" ? liveProducts?.find((item) => item.name === row[0].split("\n")[0]) : null;
       if (!product) {
-        notify(`${row[0].split("\n")[0]} opened`);
+        notify(tab === "Site history" ? "Site history is read-only." : "Stock transactions are read-only. Record a new transaction to adjust stock.");
         return;
       }
       setDrawerModule("Products");
