@@ -196,6 +196,12 @@ tbody tr:hover { background: #fbfcfb; }
 .status-quotation-sent i { background: #5d87bc; }
 .status-on-hold { color: var(--red-700); background: var(--red-50); }
 .status-on-hold i { background: #c26a62; }
+.status-healthy, .status-active { color: var(--lime-700); background: var(--lime-50); }
+.status-healthy i, .status-active i { background: var(--lime-700); }
+.status-low-stock { color: var(--amber-700); background: var(--amber-50); }
+.status-low-stock i { background: #cf963e; }
+.status-out-of-stock { color: var(--red-700); background: var(--red-50); }
+.status-out-of-stock i { background: #c26a62; }
 .supervisor { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .supervisor i { width: 22px; height: 22px; display: grid; place-items: center; color: var(--ink-600); background: var(--canvas); border-radius: 50%; font-style: normal; font-size: 8px; font-weight: 700; }
 .money, .next-action strong { font-size: 9px; white-space: nowrap; }

@@ -107,6 +107,12 @@ function displayStatus(value: string) {
   return value.split("_").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
 }
 
+function stockStatus(product: { available_quantity: number; reorder_threshold: number }) {
+  const available = Number(product.available_quantity);
+  if (available <= 0) return "Out of stock";
+  return available <= Number(product.reorder_threshold) ? "Low stock" : "Healthy";
+}
+
 function errorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   if (error && typeof error === "object") {
@@ -140,7 +146,11 @@ type ModuleConfig = {
   rows: string[][];
   badgeColumn?: number;
   insight: { title: string; value: string; note: string }[];
+  views?: Record<string, ModuleView>;
+  tabActions?: Record<string, string>;
 };
+
+type ModuleView = { columns: string[]; rows: string[][]; badgeColumn?: number };
 
 const moduleConfigs: Record<string, ModuleConfig> = {
   Customers: {
@@ -354,9 +364,11 @@ const moduleConfigs: Record<string, ModuleConfig> = {
   },
 };
 
-function ModulePage({ config, search, notify, onPrimary, onRowOpen }: { config: ModuleConfig; search: string; notify: (message: string) => void; onPrimary: () => void; onRowOpen?: (row: string[]) => void }) {
+function ModulePage({ config, search, notify, onPrimary, onRowOpen }: { config: ModuleConfig; search: string; notify: (message: string) => void; onPrimary: (tab: string) => void; onRowOpen?: (row: string[], tab: string) => void }) {
   const [activeTab, setActiveTab] = useState(config.tabs[0]);
-  const rows = config.rows.filter((row) => row.join(" ").toLowerCase().includes(search.toLowerCase()));
+  const view: ModuleView = config.views?.[activeTab] || config;
+  const primary = config.tabActions?.[activeTab] || config.primary;
+  const rows = view.rows.filter((row) => row.join(" ").toLowerCase().includes(search.toLowerCase()));
 
   return (
     <div className="content module-content">
@@ -367,7 +379,7 @@ function ModulePage({ config, search, notify, onPrimary, onRowOpen }: { config: 
           <p>{config.description}</p>
         </div>
         <div className="heading-actions">
-          <Button icon="plus" onClick={onPrimary}>{config.primary}</Button>
+          <Button icon="plus" onClick={() => onPrimary(activeTab)}>{primary}</Button>
         </div>
       </section>
 
@@ -394,25 +406,25 @@ function ModulePage({ config, search, notify, onPrimary, onRowOpen }: { config: 
           <div className="active-view"><span>{activeTab}</span><small>{rows.length} records shown</small></div>
           <div className="module-table-scroll">
             <table className="module-table">
-              <thead><tr>{config.columns.map((column) => <th key={column}>{column}</th>)}<th /></tr></thead>
+              <thead><tr>{view.columns.map((column) => <th key={column}>{column}</th>)}<th /></tr></thead>
               <tbody>
                 {rows.map((row, rowIndex) => (
-                  <tr key={`${row[0]}-${rowIndex}`} onClick={() => onRowOpen ? onRowOpen(row) : notify(`${row[0].split("\n")[0]} opened`)}>
+                  <tr key={`${row[0]}-${rowIndex}`} onClick={() => onRowOpen ? onRowOpen(row, activeTab) : notify(`${row[0].split("\n")[0]} opened`)}>
                     {row.map((cell, cellIndex) => (
                       <td key={`${cell}-${cellIndex}`}>
                         {cellIndex === 0 ? <div className="primary-cell"><span className={`record-icon tone-${rowIndex % 5}`}><Icon name={config.icon} size={15} /></span><span>{cell.split("\n").map((line, lineIndex) => lineIndex === 0 ? <strong key={line}>{line}</strong> : <small key={line}>{line}</small>)}</span></div>
-                          : cellIndex === config.badgeColumn ? <Status value={cell} />
+                          : cellIndex === view.badgeColumn ? <Status value={cell} />
                           : <span className={cell.startsWith("₹") ? "table-money" : ""}>{cell}</span>}
                       </td>
                     ))}
-                    <td><button className="row-more" aria-label={onRowOpen ? "Open record" : "More actions"} onClick={(event) => { event.stopPropagation(); if (onRowOpen) onRowOpen(row); else notify("Record actions opened"); }}><Icon name={onRowOpen ? "chevron" : "more"} size={18} /></button></td>
+                    <td><button className="row-more" aria-label={onRowOpen ? "Open record" : "More actions"} onClick={(event) => { event.stopPropagation(); if (onRowOpen) onRowOpen(row, activeTab); else notify("Record actions opened"); }}><Icon name={onRowOpen ? "chevron" : "more"} size={18} /></button></td>
                   </tr>
                 ))}
               </tbody>
             </table>
             {rows.length === 0 && <div className="empty"><Icon name="search" size={22} /><strong>No matching records</strong><span>Try clearing the global search.</span></div>}
           </div>
-          <div className="table-footer"><span>Showing {rows.length} of {config.rows.length} records</span><div><button disabled><Icon name="chevron" size={13} /></button><b>1</b><button><Icon name="chevron" size={13} /></button></div></div>
+          <div className="table-footer"><span>Showing {rows.length} of {view.rows.length} records</span><div><button disabled><Icon name="chevron" size={13} /></button><b>1</b><button><Icon name="chevron" size={13} /></button></div></div>
         </section>
 
         <aside className="module-side">
@@ -422,7 +434,7 @@ function ModulePage({ config, search, notify, onPrimary, onRowOpen }: { config: 
           </section>
           <section className="panel quick-actions">
             <div><h2>Quick actions</h2><p>Common tasks in this workspace</p></div>
-            <button onClick={onPrimary}><span><Icon name="plus" size={15} /></span>{config.primary}<Icon name="chevron" size={14} /></button>
+            <button onClick={() => onPrimary(activeTab)}><span><Icon name="plus" size={15} /></span>{primary}<Icon name="chevron" size={14} /></button>
             <button onClick={() => notify("Pending items opened")}><span><Icon name="alert" size={15} /></span>View pending items<Icon name="chevron" size={14} /></button>
             <button onClick={() => notify("Activity history opened")}><span><Icon name="clock" size={15} /></span>View activity history<Icon name="chevron" size={14} /></button>
           </section>
@@ -566,13 +578,22 @@ const formFields: Record<string, FormField[]> = {
   ],
   "Godown & Materials": [
     { label: "Transaction type", placeholder: "Select type", type: "select", options: ["Stock receipt", "Site issue", "Site return"], required: true },
-    { label: "Product", placeholder: "Select product", type: "select", options: ["Dr. Fixit Pidifin 2K", "Fosroc Brushbond", "Sika Latex Power"], required: true },
-    { label: "Transaction date", placeholder: "DD/MM/YYYY", required: true },
+    { label: "Product", placeholder: "Select product", type: "select", options: [], required: true },
+    { label: "Transaction date", placeholder: "Select transaction date", type: "date", required: true },
     { label: "Quantity", placeholder: "0", required: true },
-    { label: "Unit", placeholder: "Select unit", type: "select", options: ["Bucket", "Bag", "Can", "Kg", "Litre"], required: true },
-    { label: "Site", placeholder: "Required for issues and returns", type: "select", options: ["GH-0148 · Krishna Residency", "GH-0145 · Prestige Warehouse", "GH-0139 · Sri Sai Apartments"] },
+    { label: "Site", placeholder: "Required for issues and returns", type: "select", options: [] },
     { label: "Reference / remarks", placeholder: "Supplier reference or transaction notes", type: "textarea" },
     { label: "Supporting document", placeholder: "Optional invoice or acknowledgement", type: "file" },
+  ],
+  Products: [
+    { label: "Product name", placeholder: "e.g. Dr. Fixit Pidifin 2K", required: true },
+    { label: "Category", placeholder: "Select category", type: "select", options: ["Waterproofing", "Coating", "Admixture", "Sealant", "Primer", "Tools", "Other"], required: true },
+    { label: "Brand", placeholder: "e.g. Dr. Fixit" },
+    { label: "SKU", placeholder: "Optional product code" },
+    { label: "Unit", placeholder: "Select unit", type: "select", options: ["Bucket", "Bag", "Can", "Kg", "Litre", "Nos", "Box"], required: true },
+    { label: "Opening stock", placeholder: "0" },
+    { label: "Low-stock level", placeholder: "0" },
+    { label: "Status", placeholder: "Select status", type: "select", options: ["Active", "Inactive"] },
   ],
   "Labour & Attendance": [
     { label: "Labourer", placeholder: "Select labourer", type: "select", options: ["Ninga", "Mahesha", "Govinda", "Pavan", "Ringa", "Shivaraj"], required: true },
@@ -628,8 +649,9 @@ function FormDrawer({ module, onClose, onSave, initialValues, editing }: { modul
     { label: "Details", placeholder: "Enter record details", type: "textarea" as const, required: true },
     { label: "Supporting document", placeholder: "Upload file", type: "file" as const },
   ];
-  const createTitle = module === "Labour Expense Claims" ? "New expense claim" : module === "Sites" ? "Add new site" : module === "Customers" ? "Add customer" : module === "Work Progress" ? "Post progress update" : module === "Invoices & Payments" ? "Create invoice" : `Add ${module.toLowerCase()} record`;
-  const title = editing && module === "Customers" ? "Edit customer" : editing && module === "Sites" ? "Edit site" : createTitle;
+  const createTitle = module === "Labour Expense Claims" ? "New expense claim" : module === "Sites" ? "Add new site" : module === "Customers" ? "Add customer" : module === "Products" ? "Add product" : module === "Godown & Materials" ? "Record stock transaction" : module === "Work Progress" ? "Post progress update" : module === "Invoices & Payments" ? "Create invoice" : `Add ${module.toLowerCase()} record`;
+  const recordLabel = module === "Sites" ? "site" : module === "Products" ? "product" : "customer";
+  const title = editing ? `Edit ${recordLabel}` : createTitle;
   const [values, setValues] = useState<Record<string, string>>(initialValues || {});
   const [files, setFiles] = useState<Record<string, File>>({});
   const [saving, setSaving] = useState(false);
@@ -778,7 +800,7 @@ function FormDrawer({ module, onClose, onSave, initialValues, editing }: { modul
           {module === "Labour Expense Claims" && <div className="receipt-warning span-two"><Icon name="alert" size={16} /><span>If no receipt is attached, the claim will be clearly marked <strong>No receipt</strong> and a reason will be required.</span></div>}
           {saveError && <div className="save-error span-two"><Icon name="alert" size={16} /><span>{saveError}</span></div>}
         </div>
-        <footer><Button variant="secondary" onClick={onClose}>Cancel</Button><Button icon="check" onClick={submit}>{saving ? "Saving…" : editing ? `Update ${module === "Sites" ? "site" : "customer"}` : "Save record"}</Button></footer>
+        <footer><Button variant="secondary" onClick={onClose}>Cancel</Button><Button icon="check" onClick={submit}>{saving ? "Saving…" : editing ? `Update ${recordLabel}` : "Save record"}</Button></footer>
       </aside>
     </div>
   );
@@ -1489,6 +1511,9 @@ export default function App() {
   const [liveSites, setLiveSites] = useState<any[] | null>(null);
   const [liveProfiles, setLiveProfiles] = useState<any[]>([]);
   const [liveInspections, setLiveInspections] = useState<any[] | null>(null);
+  const [liveProducts, setLiveProducts] = useState<any[] | null>(null);
+  const [liveStock, setLiveStock] = useState<any[] | null>(null);
+  const [drawerModule, setDrawerModule] = useState<string | null>(null);
   const [dataError, setDataError] = useState("");
 
   const dashboardProjects = useMemo(() => {
@@ -1571,8 +1596,106 @@ export default function App() {
         }),
       };
     }
+    if (liveProducts !== null && liveStock !== null) {
+      const productById = new Map(liveProducts.map((product) => [product.id, product]));
+      const siteById = new Map((liveSites || []).map((site) => [site.id, site]));
+      const qty = (value: number) => Number(value).toLocaleString("en-IN", { maximumFractionDigits: 2 });
+      const shortDate = (value: string) => new Date(value).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+      const typeLabels: Record<string, string> = { receipt: "Receipt", issue: "Issue", return: "Return" };
+      const unitOf = (product: any) => product?.unit ? displayStatus(product.unit) : "";
+      const lastMovement = new Map<string, any>();
+      for (const transaction of liveStock) if (!lastMovement.has(transaction.product_id)) lastMovement.set(transaction.product_id, transaction);
+      const activeProducts = liveProducts.filter((product) => product.active);
+      const lowStock = activeProducts.filter((product) => stockStatus(product) !== "Healthy");
+
+      const transactionRows = (type: string) => liveStock.filter((transaction) => transaction.transaction_type === type).map((transaction) => {
+        const product = productById.get(transaction.product_id);
+        const site = transaction.site_id ? siteById.get(transaction.site_id) : null;
+        return [
+          `${product?.name || "Product"}\n${shortDate(transaction.transaction_at)}`,
+          `${qty(transaction.quantity)} ${unitOf(product)}`.trim(),
+          site ? `${site.site_code} · ${site.project_name}` : "Godown",
+          transaction.supplier_or_reference || "—",
+          liveProfiles.find((profile) => profile.id === transaction.created_by)?.full_name || "—",
+          typeLabels[transaction.transaction_type],
+        ];
+      });
+      const transactionView = (type: string): ModuleView => ({ columns: ["PRODUCT / DATE", "QUANTITY", "SITE", "REFERENCE", "RECORDED BY", "TYPE"], rows: transactionRows(type) });
+
+      const siteTotals = new Map<string, { siteId: string; productId: string; issued: number; returned: number; last: string }>();
+      for (const transaction of liveStock) {
+        if (!transaction.site_id || transaction.transaction_type === "receipt") continue;
+        const key = `${transaction.site_id}:${transaction.product_id}`;
+        const total = siteTotals.get(key) || { siteId: transaction.site_id, productId: transaction.product_id, issued: 0, returned: 0, last: transaction.transaction_at };
+        if (transaction.transaction_type === "issue") total.issued += Number(transaction.quantity);
+        else total.returned += Number(transaction.quantity);
+        siteTotals.set(key, total);
+      }
+      const siteHistoryRows = Array.from(siteTotals.values()).map((total) => {
+        const site = siteById.get(total.siteId);
+        const product = productById.get(total.productId);
+        return [
+          site ? `${site.site_code}\n${site.project_name}` : "Site",
+          product?.name || "Product",
+          `${qty(total.issued)} ${unitOf(product)}`.trim(),
+          qty(total.returned),
+          qty(total.issued - total.returned),
+          shortDate(total.last),
+        ];
+      });
+
+      const today = new Date().toDateString();
+      const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const issuedToday = liveStock.filter((transaction) => transaction.transaction_type === "issue" && new Date(transaction.transaction_at).toDateString() === today);
+      const returnsThisWeek = liveStock.filter((transaction) => transaction.transaction_type === "return" && new Date(transaction.transaction_at).getTime() >= weekAgo);
+      const sumQuantity = (transactions: any[]) => qty(transactions.reduce((sum, transaction) => sum + Number(transaction.quantity), 0));
+      const siteCount = (transactions: any[]) => new Set(transactions.map((transaction) => transaction.site_id)).size;
+      const brandCount = new Set(activeProducts.map((product) => product.brand).filter(Boolean)).size;
+      const latestReceipt = liveStock.find((transaction) => transaction.transaction_type === "receipt");
+
+      configs["Godown & Materials"] = {
+        ...moduleConfigs["Godown & Materials"],
+        tabs: ["Stock balance", "Products", "Receipts", "Issues", "Returns", "Site history"],
+        metrics: [
+          { label: "ACTIVE PRODUCTS", value: String(activeProducts.length), note: `Across ${brandCount} brand${brandCount === 1 ? "" : "s"}`, tone: "green" },
+          { label: "LOW STOCK", value: String(lowStock.length), note: lowStock.length ? "Reorder required" : "All products healthy", tone: "red" },
+          { label: "ISSUED TODAY", value: sumQuantity(issuedToday), note: `Units to ${siteCount(issuedToday)} site${siteCount(issuedToday) === 1 ? "" : "s"}`, tone: "blue" },
+          { label: "RETURNS THIS WEEK", value: sumQuantity(returnsThisWeek), note: `Units from ${siteCount(returnsThisWeek)} site${siteCount(returnsThisWeek) === 1 ? "" : "s"}`, tone: "amber" },
+        ],
+        rows: activeProducts.map((product) => {
+          const last = lastMovement.get(product.id);
+          return [
+            `${product.name}\n${product.brand || product.sku || "—"}`,
+            `${displayStatus(product.category)} · ${unitOf(product)}`,
+            qty(product.available_quantity),
+            qty(product.reorder_threshold),
+            last ? `${typeLabels[last.transaction_type]} · ${new Date(last.transaction_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}` : "No movement",
+            stockStatus(product),
+          ];
+        }),
+        views: {
+          Products: {
+            columns: ["PRODUCT", "CATEGORY", "UNIT", "OPENING STOCK", "REORDER AT", "STATUS"],
+            rows: liveProducts.map((product) => [`${product.name}\n${product.sku || product.brand || "—"}`, displayStatus(product.category), unitOf(product), qty(product.opening_stock), qty(product.reorder_threshold), product.active ? "Active" : "Inactive"]),
+            badgeColumn: 5,
+          },
+          Receipts: transactionView("receipt"),
+          Issues: transactionView("issue"),
+          Returns: transactionView("return"),
+          "Site history": { columns: ["SITE", "PRODUCT", "ISSUED", "RETURNED", "NET AT SITE", "LAST MOVEMENT"], rows: siteHistoryRows },
+        },
+        tabActions: { Products: "Add product" },
+        insight: [
+          { title: "Issued today", value: `${sumQuantity(issuedToday)} units`, note: `Across ${siteCount(issuedToday)} site${siteCount(issuedToday) === 1 ? "" : "s"}` },
+          { title: "Material at sites", value: String(siteHistoryRows.filter((row) => Number.parseFloat(row[4].replace(/,/g, "")) > 0).length), note: "Site and product pairs" },
+          { title: "Recent receipt", value: latestReceipt ? new Date(latestReceipt.transaction_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short" }) : "—", note: latestReceipt ? productById.get(latestReceipt.product_id)?.name || "Product" : "No receipts yet" },
+        ],
+      };
+    }
     return configs;
-  }, [liveCustomers, liveSites, liveProfiles, liveInspections]);
+  }, [liveCustomers, liveSites, liveProfiles, liveInspections, liveProducts, liveStock]);
+
+  const lowStockCount = liveProducts === null ? null : liveProducts.filter((product) => product.active && stockStatus(product) !== "Healthy").length;
 
   const notify = (message: string) => {
     setToast(message);
@@ -1580,11 +1703,14 @@ export default function App() {
   };
 
   const loadCoreData = async () => {
-    const [customersResult, sitesResult, profilesResult, inspectionsResult] = await Promise.all([
+    const [customersResult, sitesResult, profilesResult, inspectionsResult, productsResult, stockResult, balancesResult] = await Promise.all([
       supabase.from("customers").select("id, customer_code, name, primary_mobile, email, business_relationship, customer_type, billing_name, billing_address, gstin, notes, created_at").is("archived_at", null).order("created_at", { ascending: false }),
       supabase.from("sites").select("id, site_code, customer_id, project_name, address, site_type, application_areas, lead_source, ultratech_sr_id, ultratech_engineer_id, team_member_id, referral_customer_id, visit_date, supervisor_id, status, notes, created_at").is("archived_at", null).order("created_at", { ascending: false }),
       supabase.from("profiles").select("id, email, full_name, phone, role, active, created_at, updated_at").order("created_at", { ascending: true }),
       supabase.from("inspections").select("id, site_id, visit_number, inspected_at, inspector_id, building_type, application_areas, status, findings, remarks, created_at").order("inspected_at", { ascending: false }),
+      supabase.from("products").select("id, name, category, brand, sku, unit, opening_stock, reorder_threshold, active, created_at").order("name"),
+      supabase.from("stock_transactions").select("id, transaction_type, transaction_at, product_id, site_id, quantity, supplier_or_reference, notes, attachment_path, created_by, created_at").order("transaction_at", { ascending: false }).limit(1000),
+      supabase.from("product_stock_balances").select("product_id, available_quantity"),
     ]);
     const coreError = customersResult.error || sitesResult.error;
     if (coreError) {
@@ -1595,7 +1721,12 @@ export default function App() {
     setLiveSites(sitesResult.data || []);
     if (!profilesResult.error) setLiveProfiles(profilesResult.data || []);
     if (!inspectionsResult.error) setLiveInspections(inspectionsResult.data || []);
-    const optionalError = profilesResult.error || inspectionsResult.error;
+    if (!productsResult.error) {
+      const available = new Map((balancesResult.data || []).map((balance) => [balance.product_id, Number(balance.available_quantity)]));
+      setLiveProducts((productsResult.data || []).map((product) => ({ ...product, available_quantity: available.get(product.id) ?? Number(product.opening_stock) })));
+    }
+    if (!stockResult.error) setLiveStock(stockResult.data || []);
+    const optionalError = profilesResult.error || inspectionsResult.error || productsResult.error || stockResult.error || balancesResult.error;
     setDataError(optionalError ? `Core records loaded, but some related data is unavailable: ${optionalError.message}` : "");
   };
 
@@ -1606,12 +1737,14 @@ export default function App() {
     setProfileOpen(false);
     setDrawerOpen(false);
     setEditingRecord(null);
+    setDrawerModule(null);
     setEditingInspectionId(null);
     setFunctionalScreen(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const openPrimaryAction = () => {
+  const openPrimaryAction = (tab?: string) => {
+    setDrawerModule(activeNav === "Godown & Materials" && tab === "Products" ? "Products" : null);
     if (activeNav === "Inspections") {
       setEditingInspectionId(null);
       setFunctionalScreen("inspection");
@@ -1623,7 +1756,31 @@ export default function App() {
     }
   };
 
-  const openModuleRow = async (row: string[]) => {
+  const openModuleRow = async (row: string[], tab?: string) => {
+    if (activeNav === "Godown & Materials") {
+      const product = tab === "Products" ? liveProducts?.find((item) => item.name === row[0].split("\n")[0]) : null;
+      if (!product) {
+        notify(`${row[0].split("\n")[0]} opened`);
+        return;
+      }
+      setDrawerModule("Products");
+      setEditingRecord({
+        module: "Products",
+        id: product.id,
+        values: {
+          "Product name": product.name,
+          Category: displayStatus(product.category),
+          Brand: product.brand || "",
+          SKU: product.sku || "",
+          Unit: displayStatus(product.unit),
+          "Opening stock": String(product.opening_stock),
+          "Low-stock level": String(product.reorder_threshold),
+          Status: product.active ? "Active" : "Inactive",
+        },
+      });
+      setDrawerOpen(true);
+      return;
+    }
     if (activeNav === "Inspections") {
       const shortId = row[0].split("\n")[0].replace("INS-", "").toLowerCase();
       const inspection = liveInspections?.find((item) => item.id.toLowerCase().startsWith(shortId));
@@ -1890,10 +2047,29 @@ export default function App() {
           created_by: userId,
         });
         if (error) throw error;
+      } else if (module === "Products") {
+        const productData = {
+          name: values["Product name"].trim(),
+          category: toEnum(values.Category),
+          brand: values.Brand?.trim() || null,
+          sku: values.SKU?.trim() || null,
+          unit: toEnum(values.Unit),
+          opening_stock: toNumber(values["Opening stock"] || "0"),
+          reorder_threshold: toNumber(values["Low-stock level"] || "0"),
+          active: values.Status !== "Inactive",
+        };
+        const { data: sameName } = await supabase.from("products").select("id").ilike("name", productData.name);
+        if ((sameName || []).some((product) => product.id !== editId)) throw new Error("A product with this name already exists.");
+        const { error } = editId
+          ? await supabase.from("products").update(productData).eq("id", editId)
+          : await supabase.from("products").insert({ ...productData, created_by: userId });
+        if (error) throw error;
       } else if (module === "Godown & Materials") {
         const { data: product, error: productError } = await supabase.from("products").select("id").eq("name", values.Product).single();
         if (productError || !product) throw new Error("The selected product was not found in Supabase.");
         const transactionMap: Record<string, string> = { "Stock receipt": "receipt", "Site issue": "issue", "Site return": "return" };
+        if (transactionMap[values["Transaction type"]] !== "receipt" && !values.Site) throw new Error("Site is required for site issues and returns.");
+        if (toNumber(values.Quantity) <= 0) throw new Error("Quantity must be greater than zero.");
         const site = values.Site ? await findSite(values.Site) : null;
         let attachmentPath: string | null = null;
         if (files["Supporting document"]) {
@@ -1902,7 +2078,7 @@ export default function App() {
         }
         const { error } = await supabase.from("stock_transactions").insert({
           transaction_type: transactionMap[values["Transaction type"]],
-          transaction_at: new Date(toIsoDate(values["Transaction date"])).toISOString(),
+          transaction_at: new Date(`${toIsoDate(values["Transaction date"])}T${new Date().toTimeString().slice(0, 8)}`).toISOString(),
           product_id: product.id,
           site_id: site?.id || null,
           quantity: toNumber(values.Quantity),
@@ -1989,10 +2165,13 @@ export default function App() {
       setDrawerOpen(false);
       setEditingRecord(null);
       await loadCoreData();
-      notify(editId ? `${module === "Sites" ? "Site" : "Customer"} updated in Supabase` : "Record saved to Supabase");
+      setDrawerModule(null);
+      notify(editId ? `${module === "Sites" ? "Site" : module === "Products" ? "Product" : "Customer"} updated in Supabase` : "Record saved to Supabase");
       return null;
     } catch (error) {
       const message = errorMessage(error);
+      if (message.startsWith("Insufficient stock")) return message.split(" · ")[0];
+      if (message.includes("products_sku_key")) return "A product with this SKU already exists.";
       if (message.includes("Could not find the table")) return "Required database tables are missing. Apply the Supabase migrations first.";
       if (message.includes("row-level security")) return "Supabase denied this action. Check the user profile role and RLS policies.";
       return message;
@@ -2090,7 +2269,7 @@ export default function App() {
             <button className="finance-stat" onClick={() => navigate("Inspections")}><span>VISITS DUE</span><strong>7</strong></button>
             <button className="finance-stat" onClick={() => navigate("Quotations")}><span>FOLLOW-UPS</span><strong>5</strong></button>
             <button className="finance-stat warning" onClick={() => navigate("Invoices & Payments")}><span>OVERDUE INVOICES</span><strong>3</strong></button>
-            <button className="finance-stat warning" onClick={() => navigate("Godown & Materials")}><span>LOW STOCK</span><strong>2</strong></button>
+            <button className="finance-stat warning" onClick={() => navigate("Godown & Materials")}><span>LOW STOCK</span><strong>{lowStockCount ?? 2}</strong></button>
             <button className="text-link" onClick={() => navigate("Sites")}>Open activity list <Icon name="arrow" size={15} /></button>
           </section>
 
@@ -2127,7 +2306,7 @@ export default function App() {
               <section className="panel alerts-panel">
                 <div className="panel-header compact"><div><h2>Needs attention</h2><p>Items requiring action</p></div><span className="count-badge">10</span></div>
                 <div className="alert-list">
-                  {alerts.map((alert) => <button className="alert-item" key={alert.title} onClick={() => notify(alert.action)}><span className={`alert-icon ${alert.tone}`}><Icon name={alert.icon} size={17} /></span><span><strong>{alert.title}</strong><small>{alert.detail}</small></span><Icon name="chevron" size={15} /></button>)}
+                  {alerts.map((alert) => alert.icon === "box" && lowStockCount !== null ? { ...alert, detail: `${lowStockCount} product${lowStockCount === 1 ? "" : "s"} below threshold` } : alert).map((alert) => <button className="alert-item" key={alert.title} onClick={() => notify(alert.action)}><span className={`alert-icon ${alert.tone}`}><Icon name={alert.icon} size={17} /></span><span><strong>{alert.title}</strong><small>{alert.detail}</small></span><Icon name="chevron" size={15} /></button>)}
                 </div>
                 <button className="all-alerts" onClick={() => notify("All alerts opened")}>View all alerts <Icon name="arrow" size={15} /></button>
               </section>
@@ -2144,14 +2323,15 @@ export default function App() {
           </div>
         </div> : activeNav === "Users & Settings"
           ? <UsersSettingsPage profiles={liveProfiles} notify={notify} refresh={loadCoreData} navigate={navigate} onInvite={() => { setEditingRecord(null); setDrawerOpen(true); }} />
-          : <ModulePage key={activeNav} config={liveModuleConfigs[activeNav]} search={search} notify={notify} onPrimary={openPrimaryAction} onRowOpen={["Customers", "Sites", "Inspections"].includes(activeNav) ? openModuleRow : undefined} />}
+          : <ModulePage key={activeNav} config={liveModuleConfigs[activeNav]} search={search} notify={notify} onPrimary={openPrimaryAction} onRowOpen={["Customers", "Sites", "Inspections", "Godown & Materials"].includes(activeNav) ? openModuleRow : undefined} />}
       </main>
       {drawerOpen && <FormDrawer
-        module={activeNav}
+        key={drawerModule || activeNav}
+        module={drawerModule || activeNav}
         initialValues={editingRecord?.values}
         editing={Boolean(editingRecord)}
-        onClose={() => { setDrawerOpen(false); setEditingRecord(null); }}
-        onSave={(values, files) => saveForm(activeNav, values, files, editingRecord?.id)}
+        onClose={() => { setDrawerOpen(false); setEditingRecord(null); setDrawerModule(null); }}
+        onSave={(values, files) => saveForm(drawerModule || activeNav, values, files, editingRecord?.id)}
       />}
       {toast && <div className="toast"><span><Icon name="check" size={15} /></span>{toast}<button aria-label="Dismiss notification" onClick={() => setToast("")}><Icon name="close" size={14} /></button></div>}
     </div>
