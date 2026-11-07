@@ -2170,7 +2170,8 @@ export default function App() {
       return null;
     } catch (error) {
       const message = errorMessage(error);
-      if (message.startsWith("Insufficient stock")) return message.split(" · ")[0];
+      if (message.startsWith("Insufficient stock") || message.startsWith("Return exceeds")) return message.split(" · ")[0];
+      if (message.includes("products_name_unique_idx")) return "A product with this name already exists.";
       if (message.includes("products_sku_key")) return "A product with this SKU already exists.";
       if (message.includes("Could not find the table")) return "Required database tables are missing. Apply the Supabase migrations first.";
       if (message.includes("row-level security")) return "Supabase denied this action. Check the user profile role and RLS policies.";
